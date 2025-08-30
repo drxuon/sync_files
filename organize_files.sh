@@ -133,9 +133,9 @@ cleanup() {
     echo ""
     echo "STATISTICHE PARZIALI:"
     echo "- File processati prima dell'interruzione: $((MOVED + SKIPPED + ERRORS + DUPLICATES_FOUND))"
-    echo "- File spostati: $MOVED"
-    echo "- File saltati: $SKIPPED"
-    echo "- Duplicati trovati e rinominati: $DUPLICATES_FOUND"
+    echo "- File spostati con successo: $MOVED"
+    echo "- File saltati (data non valida): $SKIPPED"
+    echo "- File duplicati trovati e rinominati: $DUPLICATES_FOUND"
     echo "- Errori: $ERRORS"
     
     if [ ${#DUPLICATE_FILES[@]} -gt 0 ]; then
@@ -440,6 +440,7 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
     total_processed=$((MOVED + SKIPPED + ERRORS + DUPLICATES_FOUND))
     if (( total_processed % 50 == 0 )) && (( total_processed > 0 )); then
         echo "--- PROGRESSO: $total_processed file processati ---"
+        echo "    (Spostati: $MOVED | Saltati: $SKIPPED | Duplicati: $DUPLICATES_FOUND | Errori: $ERRORS)"
     fi
 done
 
@@ -452,8 +453,9 @@ if [ "$DRY_RUN" = true ]; then
     echo "RIEPILOGO SIMULAZIONE:"
     echo "- File che verrebbero spostati: $MOVED"
     echo "- File che verrebbero saltati: $SKIPPED"
-    echo "- Duplicati che verrebbero rinominati: $DUPLICATES_FOUND"
+    echo "- File duplicati che verrebbero rinominati: $DUPLICATES_FOUND"
     echo "- Errori che si verificherebbero: $ERRORS"
+    echo "- Totale file che verrebbero processati: $((MOVED + SKIPPED + DUPLICATES_FOUND + ERRORS))"
     
     if [ ${#DUPLICATE_FILES[@]} -gt 0 ]; then
         echo ""
@@ -533,14 +535,27 @@ else
     echo ""
     echo "STATISTICHE FINALI:"
     echo "- File spostati con successo: $MOVED"
-    echo "- File saltati (data non valida): $SKIPPED" 
-    echo "- File duplicati rinominati: $DUPLICATES_FOUND"
+    echo "- File saltati (data non valida o già posizionati): $SKIPPED" 
+    echo "- File duplicati trovati e rinominati: $DUPLICATES_FOUND"
     echo "- Errori verificatisi: $ERRORS"
     echo "- Totale file processati: $((MOVED + SKIPPED + ERRORS + DUPLICATES_FOUND))"
     
+    # Calcola percentuali se ci sono file processati
+    total_files=$((MOVED + SKIPPED + ERRORS + DUPLICATES_FOUND))
+    if [ "$total_files" -gt 0 ]; then
+        moved_percent=$(( MOVED * 100 / total_files ))
+        duplicates_percent=$(( DUPLICATES_FOUND * 100 / total_files ))
+        echo ""
+        echo "PERCENTUALI:"
+        echo "- File spostati correttamente: ${moved_percent}%"
+        if [ "$DUPLICATES_FOUND" -gt 0 ]; then
+            echo "- File duplicati trovati: ${duplicates_percent}%"
+        fi
+    fi
+    
     if [ ${#DUPLICATE_FILES[@]} -gt 0 ]; then
         echo ""
-        echo "FILE DUPLICATI RINOMINATI CON _DUP:"
+        echo "📋 DETTAGLIO FILE DUPLICATI RINOMINATI ($DUPLICATES_FOUND totali):"
         for dup_file in "${DUPLICATE_FILES[@]}"; do
             echo "  • $dup_file"
         done
