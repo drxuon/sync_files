@@ -1,54 +1,56 @@
-Database SQLite Locale
-Tabelle create automaticamente:
+🔄 Gestione Interruzioni e Ripresa
+Funzionamento automatico:
 
-sync_reports: report delle sincronizzazioni con statistiche complete
-transferred_files: dettagli di ogni file trasferito con hash e dimensioni
-sync_errors: log completo degli errori con timestamp
+Rilevamento interruzioni: Lo script rileva automaticamente sincronizzazioni incomplete
+Ripresa interattiva: Chiede se vuoi riprendere la sincronizzazione interrotta
+Skip intelligente: Salta tutti i file già elaborati con successo
+Salvataggio progresso: Ogni 10 file processati il progresso viene salvato
 
-🔄 Funzionamento Corretto
-Flusso operativo:
+Controlli duplicati avanzati:
 
-Script gira sul Raspberry Pi
-Legge file locali (struttura anno/mese)
-Si connette al server Nextcloud via SSH come root
-Scansiona file esistenti sul server e calcola hash
-Trasferisce file nuovi, rinomina duplicati
-Esegue comandi post-sincronizzazione automaticamente
+Verifica per percorso file
+Verifica per hash MD5 (anche se il file è stato spostato)
+Cache dei file già processati per performance ottimali
 
-🛠️ Comandi Post-Sincronizzazione Automatici
-Lo script esegue automaticamente:
-bash# Permessi file
-find /path/dest -type f -exec chmod 644 {} +
-# Permessi directory
-find /path/dest -type d -exec chmod 755 {} +
-# Proprietà a www-data
-chown -R www-data:www-data /path/dest
-# Aggiornamento database Nextcloud
-su -c "php /var/www/nextcloud/occ files:scan --all" www-data -s /bin/bash
-📊 Utilizzo
-bash# Sincronizzazione completa
-python nextcloud_sync.py \
-  --nextcloud-host 192.168.1.200 \
-  --nextcloud-user root \
-  --nextcloud-dest /var/www/nextcloud/data/admin/files/Photos \
-  --local-source /home/pi/photos \
-  --ssh-key ~/.ssh/id_rsa
+🛠️ Nuove Opzioni CLI
+bash# Ripresa automatica (chiede conferma)
+python nextcloud_sync.py --nextcloud-host server --local-source /path --nextcloud-dest /dest
 
-# Visualizza report recenti dal database
+# Forza nuova sincronizzazione ignorando quelle incomplete  
+python nextcloud_sync.py --force-new --nextcloud-host server --local-source /path --nextcloud-dest /dest
+
+# Riprendi sincronizzazione specifica dal database
+python nextcloud_sync.py --resume 15 --nextcloud-host server --local-source /path --nextcloud-dest /dest
+
+# Mostra report con info su riprese
 python nextcloud_sync.py --show-reports
+📊 Database Migliorato
+Nuove colonne e tabelle:
 
-# Con database personalizzato
-python nextcloud_sync.py --db-path /home/pi/sync_history.db --show-reports
-💾 Database Features
+already_processed: conta file skippati perché già elaborati
+resumed_from_id: traccia da quale sync si è ripreso
+processing_status: COMPLETED, INTERRUPTED, ecc.
 
-Tracking completo: ogni file trasferito viene registrato con hash, dimensione, timestamp
-Gestione errori: tutti gli errori sono loggati con dettagli
-Report storici: --show-reports mostra le sincronizzazioni passate
-Statistiche: durata, dimensioni, duplicati tutto salvato
+🚨 Gestione Interruzioni
+Ctrl+C durante l'esecuzione:
 
-🔒 Sicurezza
+Salva il progresso attuale
+Marca la sync come INTERRUPTED
+Mostra ID della sessione per ripresa
+Pulisce le connessioni SSH
 
-Connessione SSH con chiave privata o password
-Calcolo hash per rilevamento duplicati accurato
-Transazioni database per consistenza dati
-Log dettagliati per debugging
+Esempi di scenari:
+bash# Prima esecuzione - si interrompe
+python nextcloud_sync.py --nextcloud-host 192.168.1.200 --local-source /home/pi/photos --nextcloud-dest /var/www/nextcloud/data/admin/files/Photos
+# Output: "Sincronizzazione interrotta. Progresso salvato (ID: 23)"
+
+# Seconda esecuzione - ripresa automatica
+python nextcloud_sync.py --nextcloud-host 192.168.1.200 --local-source /home/pi/photos --nextcloud-dest /var/www/nextcloud/data/admin/files/Photos  
+# Output: "Trovata sincronizzazione incompleta (ID: 23). Vuoi riprenderla? (y/n): y"
+📈 Report Migliorati
+Il report ora include:
+
+File già elaborati (skippati)
+Info su riprese da sincronizzazioni precedenti
+Stima file rimanenti durante ripresa
+ID delle sessioni collegate

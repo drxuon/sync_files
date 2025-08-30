@@ -31,16 +31,18 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS sync_reports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     sync_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    files_transferred INTEGER,
-                    duplicates_found INTEGER,
-                    duplicates_renamed INTEGER,
-                    errors_count INTEGER,
-                    skipped_files INTEGER,
-                    total_size_bytes INTEGER,
+                    files_transferred INTEGER DEFAULT 0,
+                    duplicates_found INTEGER DEFAULT 0,
+                    duplicates_renamed INTEGER DEFAULT 0,
+                    errors_count INTEGER DEFAULT 0,
+                    skipped_files INTEGER DEFAULT 0,
+                    already_processed INTEGER DEFAULT 0,
+                    total_size_bytes INTEGER DEFAULT 0,
                     duration_seconds REAL,
                     source_path TEXT,
                     dest_path TEXT,
-                    status TEXT
+                    status TEXT,
+                    resumed_from_id INTEGER
                 )
             ''')
             
@@ -55,6 +57,7 @@ class DatabaseManager:
                     file_size INTEGER,
                     transfer_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     is_duplicate BOOLEAN DEFAULT FALSE,
+                    processing_status TEXT DEFAULT 'COMPLETED',
                     FOREIGN KEY (sync_id) REFERENCES sync_reports (id)
                 )
             ''')
@@ -73,14 +76,14 @@ class DatabaseManager:
             
             conn.commit()
     
-    def start_sync_session(self, source_path, dest_path):
+    def start_sync_session(self, source_path, dest_path, resumed_from=None):
         """Inizia una nuova sessione di sincronizzazione"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO sync_reports (source_path, dest_path, status)
-                VALUES (?, ?, 'RUNNING')
-            ''', (str(source_path), str(dest_path)))
+                INSERT INTO sync_reports (source_path, dest_path, status, resumed_from_id)
+                VALUES (?, ?, 'RUNNING', ?)
+            ''', (str(source_path), str(dest_path), resumed_from))
             return cursor.lastrowid
     
     def update_sync_report(self, sync_id, report, duration_seconds, status='COMPLETED'):
@@ -94,6 +97,7 @@ class DatabaseManager:
                     duplicates_renamed = ?,
                     errors_count = ?,
                     skipped_files = ?,
+                    already_processed = ?,
                     total_size_bytes = ?,
                     duration_seconds = ?,
                     status = ?
@@ -104,21 +108,22 @@ class DatabaseManager:
                 report.duplicates_renamed,
                 len(report.errors),
                 report.skipped_files,
+                report.already_processed,
                 report.total_size_transferred,
                 duration_seconds,
                 status,
                 sync_id
             ))
     
-    def log_transferred_file(self, sync_id, source_file, dest_file, file_hash, file_size, is_duplicate=False):
+    def log_transferred_file(self, sync_id, source_file, dest_file, file_hash, file_size, is_duplicate=False, status='COMPLETED'):
         """Registra un file trasferito"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO transferred_files 
-                (sync_id, source_file, dest_file, file_hash, file_size, is_duplicate)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (sync_id, str(source_file), str(dest_file), file_hash, file_size, is_duplicate))
+                (sync_id, source_file, dest_file, file_hash, file_size, is_duplicate, processing_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (sync_id, str(source_file), str(dest_file), file_hash, file_size, is_duplicate, status))
     
     def log_error(self, sync_id, error_message, file_path=None):
         """Registra un errore"""
@@ -139,6 +144,60 @@ class DatabaseManager:
                 LIMIT ?
             ''', (limit,))
             return cursor.fetchall()
+    
+    def find_incomplete_sync(self, source_path, dest_path):
+        """Trova una sincronizzazione incompleta per lo stesso percorso"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id FROM sync_reports 
+                WHERE source_path = ? AND dest_path = ? AND status IN ('RUNNING', 'INTERRUPTED')
+                ORDER BY sync_date DESC LIMIT 1
+            ''', (str(source_path), str(dest_path)))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    
+    def get_processed_files(self, sync_ids):
+        """Ottiene i file già elaborati nelle sincronizzazioni precedenti"""
+        if not sync_ids:
+            return set()
+            
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join('?' * len(sync_ids))
+            cursor.execute(f'''
+                SELECT DISTINCT source_file FROM transferred_files 
+                WHERE sync_id IN ({placeholders}) AND processing_status = 'COMPLETED'
+            ''', sync_ids)
+            return {row[0] for row in cursor.fetchall()}
+    
+    def mark_sync_interrupted(self, sync_id):
+        """Marca una sincronizzazione come interrotta"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE sync_reports SET status = 'INTERRUPTED' WHERE id = ?
+            ''', (sync_id,))
+    
+    def get_all_previous_processed_files(self, source_path, dest_path, exclude_sync_id=None):
+        """Ottiene tutti i file già elaborati per questo percorso (da tutte le sync precedenti)"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            query = '''
+                SELECT DISTINCT tf.source_file, tf.file_hash 
+                FROM transferred_files tf
+                JOIN sync_reports sr ON tf.sync_id = sr.id
+                WHERE sr.source_path = ? AND sr.dest_path = ? 
+                AND tf.processing_status = 'COMPLETED'
+            '''
+            params = [str(source_path), str(dest_path)]
+            
+            if exclude_sync_id:
+                query += ' AND tf.sync_id != ?'
+                params.append(exclude_sync_id)
+            
+            cursor.execute(query, params)
+            return {row[0]: row[1] for row in cursor.fetchall()}
 
 class MediaSyncReport:
     def __init__(self):
@@ -147,6 +206,7 @@ class MediaSyncReport:
         self.duplicates_renamed = 0
         self.errors = []
         self.skipped_files = 0
+        self.already_processed = 0
         self.total_size_transferred = 0
         
     def add_transferred(self, file_size):
@@ -164,6 +224,9 @@ class MediaSyncReport:
         
     def add_skipped(self):
         self.skipped_files += 1
+    
+    def add_already_processed(self):
+        self.already_processed += 1
 
 class NextcloudMediaSync:
     def __init__(self, nextcloud_host, nextcloud_user, nextcloud_dest_path, 
@@ -195,10 +258,12 @@ class NextcloudMediaSync:
         
         self.report = MediaSyncReport()
         self.remote_file_hashes = {}  # Cache degli hash dei file remoti
+        self.processed_files = set()  # File già elaborati in precedenza
         
         # Database manager
         self.db = DatabaseManager(db_path or "nextcloud_sync.db")
         self.sync_id = None
+        self.resumed_from_id = None
         
         # Setup logging
         logging.basicConfig(
@@ -209,7 +274,52 @@ class NextcloudMediaSync:
                 logging.StreamHandler()
             ]
         )
-        self.logger = logging.getLogger(__name__)
+    def check_for_resume(self):
+        """Controlla se esiste una sincronizzazione interrotta da riprendere"""
+        incomplete_sync_id = self.db.find_incomplete_sync(self.local_source_path, self.nextcloud_dest_path)
+        
+        if incomplete_sync_id:
+            response = input(f"Trovata sincronizzazione incompleta (ID: {incomplete_sync_id}). Vuoi riprenderla? (y/n): ")
+            if response.lower() in ['y', 'yes', 's', 'si']:
+                self.resumed_from_id = incomplete_sync_id
+                # Carica i file già elaborati
+                self.processed_files = self.db.get_all_previous_processed_files(
+                    self.local_source_path, 
+                    self.nextcloud_dest_path,
+                    exclude_sync_id=incomplete_sync_id
+                )
+                
+                # Includi anche i file della sessione interrotta se completati
+                interrupted_files = self.db.get_processed_files([incomplete_sync_id])
+                self.processed_files.update(interrupted_files)
+                
+                self.logger.info(f"Ripresa sincronizzazione: {len(self.processed_files)} file già elaborati verranno skippati")
+                return True
+            else:
+                # Marca come interrotta definitivamente
+                self.db.mark_sync_interrupted(incomplete_sync_id)
+                
+        return False
+    
+    def is_file_already_processed(self, file_path, file_hash=None):
+        """Verifica se un file è già stato elaborato in precedenza"""
+        file_path_str = str(file_path)
+        
+        # Controllo veloce per percorso
+        if file_path_str in self.processed_files:
+            return True
+        
+        # Se abbiamo l'hash, controlliamo anche quello
+        if file_hash:
+            processed_with_hash = self.db.get_all_previous_processed_files(
+                self.local_source_path, 
+                self.nextcloud_dest_path
+            )
+            for processed_path, processed_hash in processed_with_hash.items():
+                if processed_hash == file_hash:
+                    return True
+        
+        return False
         
     def calculate_file_hash(self, file_path, chunk_size=8192):
         """Calcola l'hash MD5 di un file locale"""
@@ -349,6 +459,26 @@ class NextcloudMediaSync:
     def transfer_file(self, local_file_path):
         """Trasferisce un singolo file al server Nextcloud"""
         try:
+            # Controllo se file già elaborato
+            if self.is_file_already_processed(local_file_path):
+                self.report.add_already_processed()
+                self.logger.info(f"File già elaborato, skipping: {local_file_path}")
+                return True
+            
+            # Calcola hash del file locale prima del controllo duplicati più preciso
+            file_hash = self.calculate_file_hash(local_file_path)
+            if not file_hash:
+                self.report.add_error(f"Impossibile calcolare hash per {local_file_path}")
+                if self.sync_id:
+                    self.db.log_error(self.sync_id, f"Calcolo hash fallito", local_file_path)
+                return False
+            
+            # Controllo più accurato con hash
+            if self.is_file_already_processed(local_file_path, file_hash):
+                self.report.add_already_processed()
+                self.logger.info(f"File già elaborato (hash match), skipping: {local_file_path}")
+                return True
+                
             # Calcola il percorso di destinazione mantenendo la struttura
             try:
                 relative_path = local_file_path.relative_to(self.local_source_path)
@@ -362,15 +492,7 @@ class NextcloudMediaSync:
             mkdir_cmd = f"mkdir -p '{remote_parent}'"
             self.ssh_client.exec_command(mkdir_cmd)
             
-            # Calcola hash del file locale
-            file_hash = self.calculate_file_hash(local_file_path)
-            if not file_hash:
-                self.report.add_error(f"Impossibile calcolare hash per {local_file_path}")
-                if self.sync_id:
-                    self.db.log_error(self.sync_id, f"Calcolo hash fallito", local_file_path)
-                return False
-            
-            # Controlla se è un duplicato
+            # Controlla se è un duplicato sui file remoti correnti
             is_duplicate = file_hash in self.remote_file_hashes
             final_remote_path = remote_dest_path
             
@@ -396,15 +518,25 @@ class NextcloudMediaSync:
             if not is_duplicate:
                 self.report.add_transferred(file_size)
             
-            # Log nel database
+            # Log nel database - file completato con successo
             if self.sync_id:
                 self.db.log_transferred_file(
                     self.sync_id, local_file_path, final_remote_path, 
-                    file_hash, file_size, is_duplicate
+                    file_hash, file_size, is_duplicate, 'COMPLETED'
                 )
             
             self.logger.info(f"Trasferito: {local_file_path} -> {final_remote_path}")
             return True
+            
+        except KeyboardInterrupt:
+            self.logger.warning("Interruzione rilevata durante trasferimento")
+            # Log file come interrotto
+            if self.sync_id:
+                self.db.log_transferred_file(
+                    self.sync_id, local_file_path, '', 
+                    file_hash if 'file_hash' in locals() else '', 0, False, 'INTERRUPTED'
+                )
+            raise
             
         except Exception as e:
             self.logger.error(f"Errore trasferimento {local_file_path}: {e}")
@@ -458,8 +590,85 @@ class NextcloudMediaSync:
         start_time = datetime.now()
         self.logger.info("Inizio sincronizzazione file multimediali")
         
+        # Controlla se ci sono sincronizzazioni da riprendere
+        resumed = self.check_for_resume()
+        
         # Inizia sessione nel database
-        self.sync_id = self.db.start_sync_session(self.local_source_path, self.nextcloud_dest_path)
+        self.sync_id = self.db.start_sync_session(
+            self.local_source_path, 
+            self.nextcloud_dest_path,
+            self.resumed_from_id
+        )
+        
+        if resumed:
+            self.logger.info(f"Ripresa della sincronizzazione - ID sessione: {self.sync_id}")
+        
+        try:
+            # Connessione SSH
+            if not self.connect_ssh():
+                self.db.update_sync_report(self.sync_id, self.report, 0, 'FAILED')
+                return False
+            
+            # Scansiona file esistenti sul server (solo se non stiamo riprendendo)
+            if not resumed:
+                self.scan_remote_files()
+            else:
+                self.logger.info("Ripresa: skipping scansione file remoti (usando cache precedente)")
+            
+            # Ottiene lista file locali
+            local_files = self.get_local_files()
+            if not local_files:
+                self.logger.warning("Nessun file multimediale trovato localmente")
+                self.db.update_sync_report(self.sync_id, self.report, 0, 'NO_FILES')
+                return True
+            
+            self.logger.info(f"File da processare: {len(local_files)}")
+            if resumed:
+                estimated_remaining = len(local_files) - len(self.processed_files)
+                self.logger.info(f"Stima file rimanenti: {estimated_remaining}")
+            
+            # Trasferisce ogni file
+            try:
+                for i, local_file in enumerate(local_files, 1):
+                    self.logger.info(f"Processando file {i}/{len(local_files)}: {local_file}")
+                    self.transfer_file(local_file)
+                    
+                    # Salva progresso ogni 10 file
+                    if i % 10 == 0:
+                        self.logger.info(f"Progresso salvato: {i}/{len(local_files)} file processati")
+                        
+            except KeyboardInterrupt:
+                self.logger.warning("Sincronizzazione interrotta dall'utente")
+                self.db.update_sync_report(self.sync_id, self.report, 
+                                         (datetime.now() - start_time).total_seconds(), 
+                                         'INTERRUPTED')
+                print(f"\nSincronizzazione interrotta. Progresso salvato nel database (ID: {self.sync_id})")
+                print("Riavvia lo script per continuare da dove si era fermato.")
+                return False
+            
+            # Comandi post-sincronizzazione
+            if self.report.files_transferred > 0 or self.report.duplicates_renamed > 0:
+                self.execute_post_sync_commands()
+            
+        except Exception as e:
+            self.logger.error(f"Errore generale durante sincronizzazione: {e}")
+            self.report.add_error(f"Errore generale: {e}")
+            self.db.log_error(self.sync_id, f"Errore generale: {e}")
+            
+        finally:
+            if hasattr(self, 'ssh_client'):
+                self.ssh_client.close()
+        
+        # Aggiorna report nel database
+        end_time = datetime.now()
+        duration = end_time - start_time
+        duration_seconds = duration.total_seconds()
+        
+        status = 'COMPLETED' if len(self.report.errors) == 0 else 'COMPLETED_WITH_ERRORS'
+        self.db.update_sync_report(self.sync_id, self.report, duration_seconds, status)
+        
+        self.print_report(duration)
+        return len(self.report.errors) == 0 self.nextcloud_dest_path)
         
         try:
             # Connessione SSH
@@ -515,9 +724,12 @@ class NextcloudMediaSync:
         print(f"File trasferiti: {self.report.files_transferred}")
         print(f"Duplicati trovati: {self.report.duplicates_found}")
         print(f"Duplicati rinominati: {self.report.duplicates_renamed}")
+        print(f"File già elaborati (skippati): {self.report.already_processed}")
         print(f"File saltati (errori): {self.report.skipped_files}")
         print(f"Dimensione totale trasferita: {self.format_size(self.report.total_size_transferred)}")
         print(f"Database sync ID: {self.sync_id}")
+        if self.resumed_from_id:
+            print(f"Ripresa da sync ID: {self.resumed_from_id}")
         
         if self.report.errors:
             print(f"\nErrori ({len(self.report.errors)}):")
@@ -551,13 +763,15 @@ def show_recent_reports(db_path="nextcloud_sync.db"):
     
     for report in reports:
         sync_id, sync_date, files_transferred, duplicates_found, duplicates_renamed, \
-        errors_count, skipped_files, total_size_bytes, duration_seconds, source_path, \
-        dest_path, status = report
+        errors_count, skipped_files, already_processed, total_size_bytes, duration_seconds, \
+        source_path, dest_path, status, resumed_from_id = report
         
         print(f"\nID: {sync_id} | Data: {sync_date} | Status: {status}")
+        if resumed_from_id:
+            print(f"Ripresa da ID: {resumed_from_id}")
         print(f"Percorso: {source_path} -> {dest_path}")
         print(f"File trasferiti: {files_transferred} | Duplicati: {duplicates_found} ({duplicates_renamed} rinominati)")
-        print(f"Errori: {errors_count} | Saltati: {skipped_files}")
+        print(f"File già processati: {already_processed} | Errori: {errors_count} | Saltati: {skipped_files}")
         
         if total_size_bytes:
             size_str = f"{total_size_bytes/1024/1024:.2f} MB"
@@ -575,6 +789,8 @@ def main():
     parser.add_argument('--extensions', nargs='*', help='Estensioni da sincronizzare (es: .jpg .mp4)')
     parser.add_argument('--db-path', default='nextcloud_sync.db', help='Percorso database SQLite')
     parser.add_argument('--show-reports', action='store_true', help='Mostra report recenti e esci')
+    parser.add_argument('--force-new', action='store_true', help='Forza nuova sincronizzazione ignorando quelle incomplete')
+    parser.add_argument('--resume', type=int, metavar='SYNC_ID', help='Riprendi sincronizzazione specifica dal database')
     
     args = parser.parse_args()
     
@@ -592,6 +808,19 @@ def main():
         extensions=args.extensions,
         db_path=args.db_path
     )
+    
+    # Gestione opzioni di ripresa
+    if args.resume:
+        syncer.resumed_from_id = args.resume
+        syncer.processed_files = syncer.db.get_processed_files([args.resume])
+        print(f"Ripresa forzata dalla sincronizzazione ID {args.resume}")
+    elif args.force_new:
+        print("Nuova sincronizzazione forzata (ignorando quelle incomplete)")
+        # Marca eventuali sync incomplete come interrotte
+        incomplete_id = syncer.db.find_incomplete_sync(syncer.local_source_path, syncer.nextcloud_dest_path)
+        if incomplete_id:
+            syncer.db.mark_sync_interrupted(incomplete_id)
+            print(f"Sincronizzazione {incomplete_id} marcata come interrotta")
     
     # Avvia sincronizzazione
     success = syncer.sync_files()
