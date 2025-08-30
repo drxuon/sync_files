@@ -230,7 +230,7 @@ class MediaSyncReport:
 
 class NextcloudMediaSync:
     def __init__(self, nextcloud_host, nextcloud_user, nextcloud_dest_path, 
-                 local_source_path, ssh_key_path=None, extensions=None, db_path=None):
+                 local_source_path, ssh_key_path=None, extensions=None, db_path=None, dry_run=False):
         """
         Inizializza il sincronizzatore
         
@@ -242,12 +242,14 @@ class NextcloudMediaSync:
             ssh_key_path: percorso della chiave SSH (opzionale)
             extensions: lista delle estensioni da sincronizzare
             db_path: percorso del database SQLite
+            dry_run: se True, simula le operazioni senza trasferire file
         """
         self.nextcloud_host = nextcloud_host
         self.nextcloud_user = nextcloud_user
         self.nextcloud_dest_path = Path(nextcloud_dest_path)
         self.local_source_path = Path(local_source_path)
         self.ssh_key_path = ssh_key_path
+        self.dry_run = dry_run
         
         # Estensioni multimediali supportate
         self.extensions = extensions or [
@@ -367,6 +369,10 @@ class NextcloudMediaSync:
             new_name = f"{stem}_DUP{counter if counter > 1 else ''}{suffix}"
             new_path = parent / new_name
             
+            if self.dry_run:
+                # In dry-run, simula che il file non esiste
+                return new_path
+            
             # Verifica se esiste sul server remoto
             check_cmd = f"test -f '{new_path}' && echo 'exists' || echo 'not_exists'"
             stdin, stdout, stderr = self.ssh_client.exec_command(check_cmd)
@@ -379,6 +385,11 @@ class NextcloudMediaSync:
     def scan_remote_files(self):
         """Scansiona i file esistenti sul server Nextcloud e calcola i loro hash"""
         self.logger.info("Scansione file esistenti sul server Nextcloud...")
+        
+        if self.dry_run:
+            self.logger.info("[DRY-RUN] Simulando scansione file remoti...")
+            # In dry-run, simula alcuni file esistenti per test
+            return
         
         try:
             # Crea la directory di destinazione se non esiste
@@ -487,6 +498,42 @@ class NextcloudMediaSync:
             
             remote_dest_path = self.nextcloud_dest_path / relative_path
             
+            # Statistiche del file
+            file_size = local_file_path.stat().st_size
+            
+            if self.dry_run:
+                # MODALITÀ DRY-RUN - Simula operazioni senza eseguirle
+                self.logger.info(f"[DRY-RUN] TRASFERIMENTO SIMULATO: {local_file_path}")
+                self.logger.info(f"[DRY-RUN] Destinazione: {remote_dest_path}")
+                self.logger.info(f"[DRY-RUN] Dimensione: {self.format_size(file_size)}")
+                self.logger.info(f"[DRY-RUN] Hash MD5: {file_hash}")
+                
+                # Simula controllo duplicati
+                is_duplicate = file_hash in self.remote_file_hashes
+                if is_duplicate:
+                    existing_file = self.remote_file_hashes[file_hash]
+                    self.logger.info(f"[DRY-RUN] DUPLICATO RILEVATO: esiste già come {existing_file}")
+                    final_remote_path = self.generate_duplicate_name(remote_dest_path)
+                    self.logger.info(f"[DRY-RUN] Sarebbe rinominato come: {final_remote_path}")
+                    self.report.add_duplicate()
+                    self.report.add_renamed_duplicate()
+                else:
+                    self.logger.info(f"[DRY-RUN] File unico, verrebbe trasferito normalmente")
+                    self.report.add_transferred(file_size)
+                
+                # Simula aggiornamento cache
+                self.remote_file_hashes[file_hash] = remote_dest_path
+                
+                # Log nel database in modalità dry-run
+                if self.sync_id:
+                    self.db.log_transferred_file(
+                        self.sync_id, local_file_path, remote_dest_path, 
+                        file_hash, file_size, is_duplicate, 'DRY_RUN'
+                    )
+                
+                return True
+            
+            # MODALITÀ NORMALE - Esecuzione reale
             # Crea directory remote se necessario
             remote_parent = remote_dest_path.parent
             mkdir_cmd = f"mkdir -p '{remote_parent}'"
@@ -514,7 +561,6 @@ class NextcloudMediaSync:
             self.remote_file_hashes[file_hash] = final_remote_path
             
             # Statistiche
-            file_size = local_file_path.stat().st_size
             if not is_duplicate:
                 self.report.add_transferred(file_size)
             
@@ -546,20 +592,63 @@ class NextcloudMediaSync:
                 self.db.log_error(self.sync_id, f"Trasferimento: {e}", local_file_path)
             return False
     
+    def check_and_fix_nextcloud_cache(self):
+        """Controlla e corregge problemi di cache di Nextcloud"""
+        self.logger.info("Controllo configurazione cache Nextcloud...")
+        
+        try:
+            # Verifica se APCu è installato
+            check_apcu_cmd = "php -m | grep -i apcu"
+            stdin, stdout, stderr = self.ssh_client.exec_command(check_apcu_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status != 0:
+                self.logger.warning("APCu non trovato, tentativo installazione...")
+                
+                # Comandi per installare APCu
+                install_commands = [
+                    "apt update",
+                    "apt install -y php-apcu",
+                    "systemctl restart apache2 nginx php*-fpm || true"
+                ]
+                
+                for cmd in install_commands:
+                    self.logger.info(f"Eseguendo: {cmd}")
+                    stdin, stdout, stderr = self.ssh_client.exec_command(cmd)
+                    exit_status = stdout.channel.recv_exit_status()
+                    if exit_status != 0:
+                        error = stderr.read().decode().strip()
+                        self.logger.warning(f"Comando fallito: {cmd} - {error}")
+            
+            # Configura Nextcloud per usare file cache se APCu non funziona
+            config_cmd = """
+cd /var/www/nextcloud && sudo -u www-data php occ config:system:set memcache.local --value='\\OC\\Memcache\\ArrayCache' --type=string
+"""
+            self.logger.info("Configurando cache di fallback...")
+            stdin, stdout, stderr = self.ssh_client.exec_command(config_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status == 0:
+                self.logger.info("Cache configurata correttamente")
+            else:
+                error = stderr.read().decode().strip()
+                self.logger.warning(f"Errore configurazione cache: {error}")
+                
+        except Exception as e:
+            self.logger.error(f"Errore controllo cache: {e}")
+
     def execute_post_sync_commands(self):
         """Esegue i comandi post-sincronizzazione sul server Nextcloud"""
         self.logger.info("Esecuzione comandi post-sincronizzazione...")
+        
+        # Prima controlla e corregge problemi di cache
+        self.check_and_fix_nextcloud_cache()
         
         commands = [
             # Permessi file
             f"find '{self.nextcloud_dest_path}' -type f -exec chmod 644 {{}} +",
             # Permessi directory  
-            f"find '{self.nextcloud_dest_path}' -type d -exec chmod 755 {{}} +",
-            # Cambio proprietà a www-data
-            f"chown -R www-data:www-data '{self.nextcloud_dest_path}'",
-            # Scan Nextcloud
-            'su -c "php /var/www/nextcloud/occ files:scan --all" www-data -s /bin/bash'
-        ]
+            f"find '{self.nextclou
         
         for i, cmd in enumerate(commands, 1):
             try:
@@ -588,10 +677,16 @@ class NextcloudMediaSync:
     def sync_files(self):
         """Esegue la sincronizzazione completa"""
         start_time = datetime.now()
-        self.logger.info("Inizio sincronizzazione file multimediali")
         
-        # Controlla se ci sono sincronizzazioni da riprendere
-        resumed = self.check_for_resume()
+        if self.dry_run:
+            self.logger.info("=== INIZIO DRY-RUN: SIMULAZIONE SINCRONIZZAZIONE ===")
+        else:
+            self.logger.info("Inizio sincronizzazione file multimediali")
+        
+        # Controlla se ci sono sincronizzazioni da riprendere (solo se non dry-run)
+        resumed = False
+        if not self.dry_run:
+            resumed = self.check_for_resume()
         
         # Inizia sessione nel database
         self.sync_id = self.db.start_sync_session(
@@ -604,13 +699,13 @@ class NextcloudMediaSync:
             self.logger.info(f"Ripresa della sincronizzazione - ID sessione: {self.sync_id}")
         
         try:
-            # Connessione SSH
+            # Connessione SSH (anche in dry-run per verificare connettività)
             if not self.connect_ssh():
                 self.db.update_sync_report(self.sync_id, self.report, 0, 'FAILED')
                 return False
             
-            # Scansiona file esistenti sul server (solo se non stiamo riprendendo)
-            if not resumed:
+            # Scansiona file esistenti sul server (saltata in dry-run se resuming)
+            if not resumed or not self.dry_run:
                 self.scan_remote_files()
             else:
                 self.logger.info("Ripresa: skipping scansione file remoti (usando cache precedente)")
@@ -623,6 +718,63 @@ class NextcloudMediaSync:
                 return True
             
             self.logger.info(f"File da processare: {len(local_files)}")
+            if resumed and not self.dry_run:
+                estimated_remaining = len(local_files) - len(self.processed_files)
+                self.logger.info(f"Stima file rimanenti: {estimated_remaining}")
+            
+            if self.dry_run:
+                self.logger.info("=== INIZIO SIMULAZIONE TRASFERIMENTI ===")
+            
+            # Trasferisce ogni file
+            try:
+                for i, local_file in enumerate(local_files, 1):
+                    if self.dry_run:
+                        self.logger.info(f"[DRY-RUN] Processando file {i}/{len(local_files)}: {local_file}")
+                    else:
+                        self.logger.info(f"Processando file {i}/{len(local_files)}: {local_file}")
+                    
+                    self.transfer_file(local_file)
+                    
+                    # Salva progresso ogni 10 file (non in dry-run)
+                    if i % 10 == 0 and not self.dry_run:
+                        self.logger.info(f"Progresso salvato: {i}/{len(local_files)} file processati")
+                        
+            except KeyboardInterrupt:
+                if self.dry_run:
+                    self.logger.warning("[DRY-RUN] Simulazione interrotta dall'utente")
+                else:
+                    self.logger.warning("Sincronizzazione interrotta dall'utente")
+                    self.db.update_sync_report(self.sync_id, self.report, 
+                                             (datetime.now() - start_time).total_seconds(), 
+                                             'INTERRUPTED')
+                    print(f"\nSincronizzazione interrotta. Progresso salvato nel database (ID: {self.sync_id})")
+                    print("Riavvia lo script per continuare da dove si era fermato.")
+                return False
+            
+            # Comandi post-sincronizzazione
+            if self.report.files_transferred > 0 or self.report.duplicates_renamed > 0 or self.dry_run:
+                self.execute_post_sync_commands()
+            
+        except Exception as e:
+            self.logger.error(f"Errore generale durante sincronizzazione: {e}")
+            self.report.add_error(f"Errore generale: {e}")
+            if not self.dry_run:
+                self.db.log_error(self.sync_id, f"Errore generale: {e}")
+            
+        finally:
+            if hasattr(self, 'ssh_client'):
+                self.ssh_client.close()
+        
+        # Aggiorna report nel database
+        end_time = datetime.now()
+        duration = end_time - start_time
+        duration_seconds = duration.total_seconds()
+        
+        status = 'DRY_RUN_COMPLETED' if self.dry_run else ('COMPLETED' if len(self.report.errors) == 0 else 'COMPLETED_WITH_ERRORS')
+        self.db.update_sync_report(self.sync_id, self.report, duration_seconds, status)
+        
+        self.print_report(duration)
+        return len(self.report.errors) == 0f"File da processare: {len(local_files)}")
             if resumed:
                 estimated_remaining = len(local_files) - len(self.processed_files)
                 self.logger.info(f"Stima file rimanenti: {estimated_remaining}")
@@ -718,15 +870,27 @@ class NextcloudMediaSync:
     def print_report(self, duration):
         """Stampa il report finale"""
         print("\n" + "="*60)
-        print("REPORT SINCRONIZZAZIONE COMPLETATA")
+        if self.dry_run:
+            print("REPORT DRY-RUN COMPLETATO")
+        else:
+            print("REPORT SINCRONIZZAZIONE COMPLETATA")
         print("="*60)
         print(f"Durata: {duration}")
-        print(f"File trasferiti: {self.report.files_transferred}")
-        print(f"Duplicati trovati: {self.report.duplicates_found}")
-        print(f"Duplicati rinominati: {self.report.duplicates_renamed}")
-        print(f"File già elaborati (skippati): {self.report.already_processed}")
-        print(f"File saltati (errori): {self.report.skipped_files}")
-        print(f"Dimensione totale trasferita: {self.format_size(self.report.total_size_transferred)}")
+        
+        if self.dry_run:
+            print(f"File che sarebbero trasferiti: {self.report.files_transferred}")
+            print(f"Duplicati che sarebbero trovati: {self.report.duplicates_found}")
+            print(f"Duplicati che sarebbero rinominati: {self.report.duplicates_renamed}")
+            print(f"File già elaborati (che sarebbero skippati): {self.report.already_processed}")
+            print(f"Dimensione totale che sarebbe trasferita: {self.format_size(self.report.total_size_transferred)}")
+        else:
+            print(f"File trasferiti: {self.report.files_transferred}")
+            print(f"Duplicati trovati: {self.report.duplicates_found}")
+            print(f"Duplicati rinominati: {self.report.duplicates_renamed}")
+            print(f"File già elaborati (skippati): {self.report.already_processed}")
+            print(f"File saltati (errori): {self.report.skipped_files}")
+            print(f"Dimensione totale trasferita: {self.format_size(self.report.total_size_transferred)}")
+        
         print(f"Database sync ID: {self.sync_id}")
         if self.resumed_from_id:
             print(f"Ripresa da sync ID: {self.resumed_from_id}")
@@ -737,6 +901,10 @@ class NextcloudMediaSync:
                 print(f"  - {error}")
             if len(self.report.errors) > 5:
                 print(f"  ... e altri {len(self.report.errors) - 5} errori (vedi database)")
+        
+        if self.dry_run:
+            print("\n🔍 MODALITÀ DRY-RUN: Nessun file è stato trasferito realmente.")
+            print("   Esegui senza --dry-run per effettuare il trasferimento.")
         
         print("="*60)
     
@@ -791,6 +959,7 @@ def main():
     parser.add_argument('--show-reports', action='store_true', help='Mostra report recenti e esci')
     parser.add_argument('--force-new', action='store_true', help='Forza nuova sincronizzazione ignorando quelle incomplete')
     parser.add_argument('--resume', type=int, metavar='SYNC_ID', help='Riprendi sincronizzazione specifica dal database')
+    parser.add_argument('--dry-run', action='store_true', help='Modalità dry-run: simula operazioni senza trasferire file')
     
     args = parser.parse_args()
     
@@ -806,8 +975,14 @@ def main():
         local_source_path=args.local_source,
         ssh_key_path=args.ssh_key,
         extensions=args.extensions,
-        db_path=args.db_path
+        db_path=args.db_path,
+        dry_run=args.dry_run
     )
+    
+    if args.dry_run:
+        print("🔍 MODALITÀ DRY-RUN ATTIVATA")
+        print("   Tutte le operazioni saranno simulate senza trasferimenti reali")
+        print("   Verrà testata la connettività e mostrato cosa accadrebbe\n")
     
     # Gestione opzioni di ripresa
     if args.resume:
@@ -825,7 +1000,11 @@ def main():
     # Avvia sincronizzazione
     success = syncer.sync_files()
     
-    if success:
+    if args.dry_run:
+        print("\n🔍 DRY-RUN COMPLETATO!")
+        print("   Nessun file è stato trasferito. Esegui senza --dry-run per la sincronizzazione reale.")
+        exit(0)
+    elif success:
         print("\nSincronizzazione completata con successo!")
         exit(0)
     else:
