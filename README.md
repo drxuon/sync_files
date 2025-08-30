@@ -54,3 +54,45 @@ File già elaborati (skippati)
 Info su riprese da sincronizzazioni precedenti
 Stima file rimanenti durante ripresa
 ID delle sessioni collegate
+
+# Gestione file duplicati in un folder
+
+Nuove funzionalità:
+
+Gestione prefissi/suffissi: Lo script ora riconosce date anche quando sono circondate da testo:
+
+vacanza_2024-03-15_tramonto.jpg
+IMG_20240315_120000.jpg
+backup_15-03-2024_importante.zip
+
+
+Gestione duplicati migliorata:
+
+Se trova un file identico nella destinazione, rinomina quello nella sorgente con _DUP
+Se trova un file diverso con lo stesso nome, crea una versione numerata nella destinazione
+
+
+Pattern più robusti: Riconosce più formati di data:
+
+Date europee: DD-MM-YYYY
+Date americane: MM-DD-YYYY
+Timestamp: YYYYMMDD o YYYY-MM-DD
+Con separatori vari: -, _, /
+
+
+
+Come usare:
+
+Prima testa cosa verrà riconosciuto:
+bashchmod +x test_patterns.sh
+./test_patterns.sh /path/to/directory/disordinata
+
+Poi esegui l'organizzazione:
+bashchmod +x organize_files.sh
+./organize_files.sh /path/to/directory/disordinata /path/to/directory/organizzata
+
+
+Comportamento con duplicati:
+
+File identici: photo.jpg → rinominato in photo_DUP.jpg nella directory sorgente
+File diversi stesso nome: photo.jpg → photo_1.jpg nella directory destinazione
