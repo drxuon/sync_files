@@ -1,128 +1,111 @@
 #!/bin/bash
 
-# Script per organizzare file multimediali in struttura anno/mese
-# Uso: ./organize_files.sh /path/to/source /path/to/destination
+# Script per testare il riconoscimento delle date nei nomi file
+# Uso: ./test_patterns.sh /path/to/directory
 
 SOURCE_DIR="$1"
-DEST_DIR="$2"
 
-# Controlla che siano stati forniti i parametri
-if [ $# -ne 2 ]; then
-    echo "Uso: $0 <directory_sorgente> <directory_destinazione>"
+if [ $# -ne 1 ]; then
+    echo "Uso: $0 <directory_da_testare>"
     exit 1
 fi
 
-# Controlla che le directory esistano
 if [ ! -d "$SOURCE_DIR" ]; then
-    echo "Errore: Directory sorgente non trovata: $SOURCE_DIR"
+    echo "Errore: Directory non trovata: $SOURCE_DIR"
     exit 1
 fi
 
-# Crea la directory destinazione se non esiste
-mkdir -p "$DEST_DIR"
+echo "Test riconoscimento date per i file in: $SOURCE_DIR"
+echo "========================================================"
 
-# Contatori per statistiche
-MOVED=0
-SKIPPED=0
-ERRORS=0
-
-echo "Inizio organizzazione file da $SOURCE_DIR a $DEST_DIR"
-echo "----------------------------------------"
-
-# Trova tutti i file multimediali
-find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) | while read -r file; do
+# Funzione per estrarre data dal nome file
+extract_date() {
+    local filename="$1"
+    local year=""
+    local month=""
     
-    filename=$(basename "$file")
-    echo "Processando: $filename"
+    echo "Testando: $filename"
     
-    # Estrai data dal nome file - diversi formati possibili
-    year=""
-    month=""
-    
-    # Formato: YYYY-MM-DD o YYYY_MM_DD o YYYYMMDD
-    if [[ $filename =~ ([0-9]{4})[-_]?([0-9]{2})[-_]?([0-9]{2}) ]]; then
-        year="${BASH_REMATCH[1]}"
-        month="${BASH_REMATCH[2]}"
-    # Formato: DD-MM-YYYY o DD_MM_YYYY o DD/MM/YYYY
-    elif [[ $filename =~ ([0-9]{2})[-_/]([0-9]{2})[-_/]([0-9]{4}) ]]; then
-        year="${BASH_REMATCH[3]}"
-        month="${BASH_REMATCH[2]}"
-    # Formato: IMG_YYYYMMDD o VID_YYYYMMDD
-    elif [[ $filename =~ (IMG|VID|DSC)_([0-9]{4})([0-9]{2})([0-9]{2}) ]]; then
+    # Formato: [prefisso_]YYYY-MM-DD[_suffisso] o [prefisso_]YYYY_MM_DD[_suffisso] o [prefisso_]YYYYMMDD[_suffisso]
+    if [[ $filename =~ ([^0-9]*)([0-9]{4})[-_]?([0-9]{2})[-_]?([0-9]{2})(.*)$ ]]; then
         year="${BASH_REMATCH[2]}"
         month="${BASH_REMATCH[3]}"
-    # Formato: Screenshot_YYYY-MM-DD
-    elif [[ $filename =~ Screenshot_([0-9]{4})-([0-9]{2})-([0-9]{2}) ]]; then
-        year="${BASH_REMATCH[1]}"
-        month="${BASH_REMATCH[2]}"
-    fi
-    
-    # Se non riesci a estrarre la data, prova con i metadati del file
-    if [ -z "$year" ] || [ -z "$month" ]; then
-        # Usa exiftool se disponibile
-        if command -v exiftool >/dev/null 2>&1; then
-            date_taken=$(exiftool -DateTimeOriginal -d "%Y-%m" -T "$file" 2>/dev/null)
-            if [ -n "$date_taken" ] && [ "$date_taken" != "-" ]; then
-                year=$(echo "$date_taken" | cut -d'-' -f1)
-                month=$(echo "$date_taken" | cut -d'-' -f2)
-            fi
-        fi
-        
-        # Se ancora non hai la data, usa la data di modifica del file
-        if [ -z "$year" ] || [ -z "$month" ]; then
-            file_date=$(stat -c %Y "$file")
-            year=$(date -d "@$file_date" +%Y)
-            month=$(date -d "@$file_date" +%m)
-            echo "  Usando data di modifica: $year-$month"
-        fi
-    fi
-    
-    # Valida anno e mese
-    if [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ] && [ "$month" -ge 1 ] && [ "$month" -le 12 ]; then
-        # Crea directory destinazione
-        dest_dir="$DEST_DIR/$year/$(printf "%02d" $month)"
-        mkdir -p "$dest_dir"
-        
-        dest_file="$dest_dir/$filename"
-        
-        # Controlla se il file esiste già
-        if [ -f "$dest_file" ]; then
-            # Se i file sono identici, salta
-            if cmp -s "$file" "$dest_file"; then
-                echo "  File identico già esistente, saltato"
-                ((SKIPPED++))
-                continue
-            else
-                # Rinomina con suffisso numerico
-                counter=1
-                base_name="${filename%.*}"
-                extension="${filename##*.}"
-                while [ -f "$dest_dir/${base_name}_$counter.$extension" ]; do
-                    ((counter++))
-                done
-                dest_file="$dest_dir/${base_name}_$counter.$extension"
-                echo "  Rinominato in: ${base_name}_$counter.$extension"
-            fi
-        fi
-        
-        # Sposta il file
-        if mv "$file" "$dest_file"; then
-            echo "  Spostato in: $dest_dir/"
-            ((MOVED++))
+        echo "  ✓ Pattern YYYY-MM-DD trovato: $year-$month (prefisso:'${BASH_REMATCH[1]}', suffisso:'${BASH_REMATCH[4]}')"
+    # Formato: [prefisso_]DD-MM-YYYY[_suffisso]
+    elif [[ $filename =~ ([^0-9]*)([0-9]{1,2})[-_/]([0-9]{1,2})[-_/]([0-9]{4})(.*)$ ]]; then
+        potential_year="${BASH_REMATCH[4]}"
+        potential_month="${BASH_REMATCH[3]}"
+        if [ "$potential_month" -le 12 ]; then
+            year="$potential_year"
+            month=$(printf "%02d" $potential_month)
+            echo "  ✓ Pattern DD-MM-YYYY trovato: $year-$month (prefisso:'${BASH_REMATCH[1]}', suffisso:'${BASH_REMATCH[5]}')"
         else
-            echo "  ERRORE nello spostamento"
-            ((ERRORS++))
+            # Prova formato americano MM-DD-YYYY
+            potential_month="${BASH_REMATCH[2]}"
+            if [ "$potential_month" -le 12 ]; then
+                year="$potential_year"
+                month=$(printf "%02d" $potential_month)
+                echo "  ✓ Pattern MM-DD-YYYY trovato: $year-$month (prefisso:'${BASH_REMATCH[1]}', suffisso:'${BASH_REMATCH[5]}')"
+            fi
         fi
+    # Formato con timestamp: [prefisso_]YYYY[MM[DD[_HHMMSS]]][_suffisso]
+    elif [[ $filename =~ ([^0-9]*)([0-9]{4})([0-9]{2})([0-9]{2})[^0-9]*(.*) ]]; then
+        year="${BASH_REMATCH[2]}"
+        month="${BASH_REMATCH[3]}"
+        echo "  ✓ Pattern YYYYMMDD trovato: $year-$month (prefisso:'${BASH_REMATCH[1]}', suffisso:'${BASH_REMATCH[5]}')"
+    # Formato ISO con prefisso/suffisso: [prefisso_]YYYY[MM][_suffisso]
+    elif [[ $filename =~ ([^0-9]*)([0-9]{4})[^0-9]*([0-9]{2})[^0-9]*(.*) ]]; then
+        potential_year="${BASH_REMATCH[2]}"
+        potential_month="${BASH_REMATCH[3]}"
+        if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
+            year="$potential_year"
+            month=$(printf "%02d" $potential_month)
+            echo "  ✓ Pattern YYYY-MM trovato: $year-$month (prefisso:'${BASH_REMATCH[1]}', suffisso:'${BASH_REMATCH[4]}')"
+        fi
+    fi
+    
+    # Validazione finale
+    if [ -n "$year" ] && [ -n "$month" ] && [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ] && [ "$month" -ge 1 ] && [ "$month" -le 12 ]; then
+        echo "  → Destinazione: $year/$(printf "%02d" $month)/"
+        return 0
     else
-        echo "  Data non valida estratta: $year-$month, saltato"
-        ((SKIPPED++))
+        echo "  ✗ Nessun pattern di data valido trovato"
+        return 1
+    fi
+}
+
+# Contatori
+total_files=0
+recognized_files=0
+unrecognized_files=0
+
+# Test su tutti i file multimediali
+find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) | while read -r file; do
+    filename=$(basename "$file")
+    ((total_files++))
+    
+    if extract_date "$filename"; then
+        ((recognized_files++))
+    else
+        ((unrecognized_files++))
     fi
     
     echo ""
 done
 
-echo "----------------------------------------"
-echo "Organizzazione completata!"
-echo "File spostati: $MOVED"
-echo "File saltati: $SKIPPED" 
-echo "Errori: $ERRORS"
+echo "========================================================"
+echo "RIEPILOGO:"
+echo "File totali testati: $total_files"
+echo "File con data riconosciuta: $recognized_files"
+echo "File senza data riconosciuta: $unrecognized_files"
+
+# Esempi di pattern supportati
+echo ""
+echo "ESEMPI DI PATTERN SUPPORTATI:"
+echo "• vacanza_2024-03-15_tramonto.jpg"
+echo "• IMG_20240315_120000.jpg"
+echo "• photo_15-03-2024_sera.png"
+echo "• backup_03-15-2024.zip (formato USA)"
+echo "• screenshot_2024_03_15_importante.png"
+echo "• DSC_202403151200_finale.tiff"
+echo "• video_2024-03_compleanno.mp4"
