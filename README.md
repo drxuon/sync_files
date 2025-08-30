@@ -92,50 +92,58 @@ Script di test (test_patterns.sh):
 bash# Test dettagliato (mostra ogni file)
 ./test_patterns.sh /source
 
-# Test veloce (solo statistiche + file non riconosciuti)
+Aggiornamenti al test_patterns.sh:
+1. Logica identica di riconoscimento:
+
+Stessi pattern regex di organize_files.sh
+Stessa validazione date (anni 1990-corrente)
+Stesso fallback per metadati/data modifica
+Stessi tipi di file supportati
+
+2. Output migliorato:
+Modalità normale:
+bash./test_patterns.sh /source
+
+Mostra dettagli per ogni file
+Lista file non riconosciuti
+Anteprima struttura directory con conteggi
+Percentuali di successo
+
+Modalità dry-run:
+bash./test_patterns.sh /source --dry-run
+
+Solo statistiche essenziali
+Lista file problematici
+Output veloce per grandi directory
+
+3. Report dettagliato:
+RIEPILOGO:
+File totali testati: 1,234
+File con data riconosciuta: 1,180
+File senza data riconosciuta: 54
+Percentuale riconoscimento: 95%
+
+FILE NON RICONOSCIUTI:
+✗ documento_senza_data.pdf
+✗ file_strano_nome.txt
+
+ANTEPRIMA STRUTTURA DIRECTORY:
+2024/03/                 (847 files)
+2024/01/                 (156 files)
+2023/12/                 (89 files)
+...
+4. Workflow ottimale:
+bash# 1. Test veloce per vedere problemi
 ./test_patterns.sh /source --dry-run
-Cosa fa la modalità Dry-Run:
 
-Simula tutto senza fare modifiche reali:
+# 2. Test dettagliato se necessario
+./test_patterns.sh /source
 
-Non crea directory
-Non sposta file
-Non rinomina duplicati
-
-
-Report dettagliato come se fosse stato eseguito:
-
-Conta file che verrebbero spostati
-Identifica duplicati che verrebbero rinominati
-Mostra struttura directory che verrebbe creata
-
-
-Feedback realistico:
-
-Simula controlli di file esistenti
-Mostra messaggi [DRY-RUN] per ogni azione
-Include gestione errori simulati
-
-
-
-Workflow consigliato:
-bash# 1. Test veloce dei pattern
-./test_patterns.sh /source --dry-run
-
-# 2. Simulazione completa
+# 3. Simulazione organizzazione
 ./organize_files.sh /source /dest --dry-run
 
-# 3. Esecuzione reale (solo se soddisfatto)
+# 4. Esecuzione reale
 ./organize_files.sh /source /dest
-Output esempio in dry-run:
-=== MODALITÀ DRY-RUN ATTIVA ===
-Nessuna modifica verrà effettuata realmente
+# 5. Suggerimenti automatici:
+Lo script ora fornisce consigli per migliorare il riconoscimento quando trova file problematici, suggerendo formati supportati e possibili soluzioni.
 
-Processando: vacanza_2024-03-15_tramonto.jpg
-  Data trovata (YYYY-MM-DD): 2024-03
-  [DRY-RUN] Creerei directory: /dest/2024/03
-  [DRY-RUN] Sposterei in: /dest/2024/03/
-
-=== REPORT DRY-RUN COMPLETATO ===
-- File che verrebbero spostati: 150
-- File che verrebbero saltati/rinominati: 5
