@@ -1,12 +1,36 @@
 #!/bin/bash
 
 # Script per testare il riconoscimento delle date nei nomi file
-# Uso: ./test_patterns.sh /path/to/directory
+# Uso: ./test_patterns.sh /path/to/directory [--dry-run]
 
-SOURCE_DIR="$1"
+SOURCE_DIR=""
+DRY_RUN=false
 
-if [ $# -ne 1 ]; then
-    echo "Uso: $0 <directory_da_testare>"
+# Analizza i parametri
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        *)
+            if [ -z "$SOURCE_DIR" ]; then
+                SOURCE_DIR="$1"
+            else
+                echo "Errore: Troppi parametri"
+                echo "Uso: $0 <directory_da_testare> [--dry-run]"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$SOURCE_DIR" ]; then
+    echo "Uso: $0 <directory_da_testare> [--dry-run]"
+    echo ""
+    echo "Opzioni:"
+    echo "  --dry-run    Mostra solo statistiche senza elencare ogni file"
     exit 1
 fi
 
@@ -84,13 +108,23 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
     filename=$(basename "$file")
     ((total_files++))
     
-    if extract_date "$filename"; then
-        ((recognized_files++))
+    if [ "$DRY_RUN" = false ]; then
+        if extract_date "$filename"; then
+            ((recognized_files++))
+        else
+            ((unrecognized_files++))
+        fi
+        echo ""
     else
-        ((unrecognized_files++))
+        # In modalità dry-run, solo conta senza output dettagliato
+        if extract_date "$filename" >/dev/null 2>&1; then
+            ((recognized_files++))
+        else
+            ((unrecognized_files++))
+            # Mostra solo i file non riconosciuti in dry-run
+            echo "✗ $filename"
+        fi
     fi
-    
-    echo ""
 done
 
 echo "========================================================"
