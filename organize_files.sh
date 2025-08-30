@@ -53,6 +53,114 @@ fi
 MOVED=0
 SKIPPED=0
 ERRORS=0
+DUPLICATES_FOUND=0
+
+# Array per tenere traccia dei duplicati
+declare -a DUPLICATE_FILES
+
+# File di checkpoint per restart intelligente
+CHECKPOINT_FILE="/tmp/organize_files_checkpoint_$"
+PROCESSED_FILES_LOG="/tmp/organize_files_processed_$"
+
+# Funzione per caricare checkpoint esistente
+load_checkpoint() {
+    if [ -f "$CHECKPOINT_FILE" ] && [ "$DRY_RUN" = false ]; then
+        echo "=========================================="
+        echo "CHECKPOINT TROVATO - CARICAMENTO DATI"
+        echo "=========================================="
+        source "$CHECKPOINT_FILE"
+        echo "Caricati dati sessione precedente:"
+        echo "- File già spostati: $MOVED"
+        echo "- File già saltati: $SKIPPED"  
+        echo "- Duplicati già trovati: $DUPLICATES_FOUND"
+        echo "- Errori precedenti: $ERRORS"
+        echo ""
+        
+        if [ -f "$PROCESSED_FILES_LOG" ]; then
+            processed_count=$(wc -l < "$PROCESSED_FILES_LOG")
+            echo "- File già processati: $processed_count"
+            echo ""
+            echo "Riprendendo l'elaborazione..."
+        fi
+        echo "----------------------------------------"
+    elif [ -f "$CHECKPOINT_FILE" ] && [ "$DRY_RUN" = true ]; then
+        echo "ℹ️  Checkpoint esistente ignorato in modalità dry-run"
+    fi
+}
+
+# Funzione per salvare checkpoint
+save_checkpoint() {
+    if [ "$DRY_RUN" = false ]; then
+        cat > "$CHECKPOINT_FILE" << EOF
+MOVED=$MOVED
+SKIPPED=$SKIPPED
+ERRORS=$ERRORS
+DUPLICATES_FOUND=$DUPLICATES_FOUND
+declare -a DUPLICATE_FILES=($(printf "'%s' " "${DUPLICATE_FILES[@]}"))
+EOF
+    fi
+}
+
+# Funzione per verificare se un file è già stato processato
+is_file_processed() {
+    local file_path="$1"
+    if [ -f "$PROCESSED_FILES_LOG" ] && [ "$DRY_RUN" = false ]; then
+        grep -Fxq "$file_path" "$PROCESSED_FILES_LOG" 2>/dev/null
+    else
+        return 1  # File non processato
+    fi
+}
+
+# Funzione per marcare un file come processato
+mark_file_processed() {
+    local file_path="$1"
+    if [ "$DRY_RUN" = false ]; then
+        echo "$file_path" >> "$PROCESSED_FILES_LOG"
+    fi
+}
+
+# Gestione interruzioni (Ctrl+C)
+cleanup() {
+    echo ""
+    echo "=========================================="
+    echo "INTERRUZIONE RILEVATA - SALVATAGGIO STATO"
+    echo "=========================================="
+    
+    # Salva checkpoint finale
+    save_checkpoint
+    
+    echo "Operazione interrotta dall'utente"
+    echo ""
+    echo "STATISTICHE PARZIALI:"
+    echo "- File processati prima dell'interruzione: $((MOVED + SKIPPED + ERRORS + DUPLICATES_FOUND))"
+    echo "- File spostati: $MOVED"
+    echo "- File saltati: $SKIPPED"
+    echo "- Duplicati trovati e rinominati: $DUPLICATES_FOUND"
+    echo "- Errori: $ERRORS"
+    
+    if [ ${#DUPLICATE_FILES[@]} -gt 0 ]; then
+        echo ""
+        echo "FILE DUPLICATI TROVATI E RINOMINATI:"
+        for dup_file in "${DUPLICATE_FILES[@]}"; do
+            echo "  • $dup_file"
+        done
+    fi
+    
+    echo ""
+    echo "📁 Checkpoint salvato in: $CHECKPOINT_FILE"
+    echo "📝 Log file processati: $PROCESSED_FILES_LOG"
+    echo ""
+    echo "Per riprendere dal punto di interruzione, rilancia:"
+    echo "$0 \"$SOURCE_DIR\" \"$DEST_DIR\""
+    echo ""
+    echo "Per ricominciare da capo, cancella prima i file di checkpoint:"
+    echo "rm -f \"$CHECKPOINT_FILE\" \"$PROCESSED_FILES_LOG\""
+    
+    exit 1
+}
+
+# Cattura segnali di interruzione
+trap cleanup INT TERM
 
 # Modalità dry-run
 if [ "$DRY_RUN" = true ]; then
@@ -64,8 +172,19 @@ fi
 echo "Inizio organizzazione file da $SOURCE_DIR a $DEST_DIR"
 echo "----------------------------------------"
 
+# Carica checkpoint se esistente
+load_checkpoint
+
 # Trova tutti i file multimediali
 find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) | while read -r file; do
+    
+    # Controlla se il file è già stato processato
+    if is_file_processed "$file"; then
+        if [ "$DRY_RUN" = false ]; then
+            # In modalità normale, salta i file già processati silenziosamente
+            continue
+        fi
+    fi
     
     filename=$(basename "$file")
     echo "Processando: $filename"
@@ -246,9 +365,13 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
             if mv "$file" "$dest_file"; then
                 echo "  Spostato in: $dest_dir/"
                 ((MOVED++))
+                mark_file_processed "$file"
+                save_checkpoint
             else
                 echo "  ERRORE nello spostamento"
                 ((ERRORS++))
+                mark_file_processed "$file"
+                save_checkpoint
             fi
         else
             echo "  [DRY-RUN] Sposterei in: $dest_dir/"
@@ -260,6 +383,10 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
                 echo "  [DRY-RUN] File non verrebbe spostato"
             fi
             ((SKIPPED++))
+            mark_file_processed "$file"
+            if [ "$DRY_RUN" = false ]; then
+                save_checkpoint
+            fi
         fi
     else
         echo "  Data non valida estratta: $year-$month, saltato"
@@ -267,9 +394,19 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
             echo "  [DRY-RUN] File non verrebbe spostato"
         fi
         ((SKIPPED++))
+        mark_file_processed "$file"
+        if [ "$DRY_RUN" = false ]; then
+            save_checkpoint
+        fi
     fi
     
     echo ""
+    
+    # Mostra progresso ogni 50 file processati
+    total_processed=$((MOVED + SKIPPED + ERRORS + DUPLICATES_FOUND))
+    if (( total_processed % 50 == 0 )) && (( total_processed > 0 )); then
+        echo "--- PROGRESSO: $total_processed file processati ---"
+    fi
 done
 
 echo "----------------------------------------"
