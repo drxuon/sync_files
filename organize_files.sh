@@ -112,6 +112,8 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
     elif [[ $filename =~ ([^0-9]*)([0-9]{4})[^0-9]*([0-9]{2})[^0-9]*(.*) ]]; then
         potential_year="${BASH_REMATCH[2]}"
         potential_month="${BASH_REMATCH[3]}"
+        # Rimuovi zeri iniziali e valida il mese
+        potential_month=$((10#$potential_month))
         if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
             year="$potential_year"
             month=$(printf "%02d" $potential_month)
@@ -140,17 +142,21 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
     fi
     
     # Valida anno e mese
-    if [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ] && [ "$month" -ge 1 ] && [ "$month" -le 12 ]; then
-        # Crea directory destinazione
-        dest_dir="$DEST_DIR/$year/$(printf "%02d" $month)"
-        
-        if [ "$DRY_RUN" = false ]; then
-            mkdir -p "$dest_dir"
-        else
-            echo "  [DRY-RUN] Creerei directory: $dest_dir"
-        fi
-        
-        dest_file="$dest_dir/$filename"
+    if [ -n "$year" ] && [ -n "$month" ] && [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ]; then
+        # Rimuovi zeri iniziali dal mese per evitare problemi con printf octal
+        month_num=$((10#$month))
+        if [ "$month_num" -ge 1 ] && [ "$month_num" -le 12 ]; then
+            # Crea directory destinazione
+            month_formatted=$(printf "%02d" $month_num)
+            dest_dir="$DEST_DIR/$year/$month_formatted"
+            
+            if [ "$DRY_RUN" = false ]; then
+                mkdir -p "$dest_dir"
+            else
+                echo "  [DRY-RUN] Creerei directory: $dest_dir"
+            fi
+            
+            dest_file="$dest_dir/$filename"
         
         # Controlla se il file esiste già
         if [ -f "$dest_file" ] || ( [ "$DRY_RUN" = true ] && [ -f "$dest_file" ] ); then
@@ -247,6 +253,13 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
         else
             echo "  [DRY-RUN] Sposterei in: $dest_dir/"
             ((MOVED++))
+        fi
+        else
+            echo "  Data non valida estratta: $year-$month_formatted, saltato"
+            if [ "$DRY_RUN" = true ]; then
+                echo "  [DRY-RUN] File non verrebbe spostato"
+            fi
+            ((SKIPPED++))
         fi
     else
         echo "  Data non valida estratta: $year-$month, saltato"

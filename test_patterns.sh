@@ -63,8 +63,9 @@ extract_date() {
     elif [[ $filename =~ ([^0-9]*)([0-9]{1,2})[-_/]([0-9]{1,2})[-_/]([0-9]{4})(.*)$ ]]; then
         potential_year="${BASH_REMATCH[4]}"
         potential_month="${BASH_REMATCH[3]}"
-        # Assicurati che il mese sia valido (01-12)
-        if [ "$potential_month" -le 12 ]; then
+        # Rimuovi zeri iniziali e assicurati che il mese sia valido (01-12)
+        potential_month=$((10#$potential_month))
+        if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
             year="$potential_year"
             month=$(printf "%02d" $potential_month)
             if [ "$DRY_RUN" = false ]; then
@@ -78,8 +79,9 @@ extract_date() {
     elif [[ $filename =~ ([^0-9]*)([0-9]{1,2})[-_/]([0-9]{1,2})[-_/]([0-9]{4})(.*)$ ]]; then
         potential_year="${BASH_REMATCH[4]}"
         potential_month="${BASH_REMATCH[2]}"
-        # Assicurati che il mese sia valido (01-12)
-        if [ "$potential_month" -le 12 ]; then
+        # Rimuovi zeri iniziali e assicurati che il mese sia valido (01-12)
+        potential_month=$((10#$potential_month))
+        if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
             year="$potential_year"
             month=$(printf "%02d" $potential_month)
             if [ "$DRY_RUN" = false ]; then
@@ -100,6 +102,8 @@ extract_date() {
     elif [[ $filename =~ ([^0-9]*)([0-9]{4})[^0-9]*([0-9]{2})[^0-9]*(.*) ]]; then
         potential_year="${BASH_REMATCH[2]}"
         potential_month="${BASH_REMATCH[3]}"
+        # Rimuovi zeri iniziali e valida il mese
+        potential_month=$((10#$potential_month))
         if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
             year="$potential_year"
             month=$(printf "%02d" $potential_month)
@@ -125,17 +129,22 @@ extract_date() {
     fi
     
     # Validazione finale (identica a organize_files.sh)
-    if [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ] && [ "$month" -ge 1 ] && [ "$month" -le 12 ]; then
-        if [ "$DRY_RUN" = false ]; then
-            echo "  → Destinazione: $year/$(printf "%02d" $month)/"
+    if [ -n "$year" ] && [ -n "$month" ] && [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ]; then
+        # Rimuovi zeri iniziali dal mese per evitare problemi con printf octal
+        month_num=$((10#$month))
+        if [ "$month_num" -ge 1 ] && [ "$month_num" -le 12 ]; then
+            month_formatted=$(printf "%02d" $month_num)
+            if [ "$DRY_RUN" = false ]; then
+                echo "  → Destinazione: $year/$month_formatted/"
+            fi
+            return 0
         fi
-        return 0
-    else
-        if [ "$DRY_RUN" = false ]; then
-            echo "  ✗ Data non valida estratta: $year-$month"
-        fi
-        return 1
     fi
+    
+    if [ "$DRY_RUN" = false ]; then
+        echo "  ✗ Data non valida estratta: $year-$month"
+    fi
+    return 1
 }
 
 # Contatori
@@ -220,12 +229,14 @@ if [ "$DRY_RUN" = false ] && [ "$recognized_files" -gt 0 ]; then
         elif [[ $filename =~ ([^0-9]*)([0-9]{1,2})[-_/]([0-9]{1,2})[-_/]([0-9]{4})(.*)$ ]]; then
             potential_year="${BASH_REMATCH[4]}"
             potential_month="${BASH_REMATCH[3]}"
-            if [ "$potential_month" -le 12 ]; then
+            potential_month=$((10#$potential_month))
+            if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
                 year="$potential_year"
                 month=$(printf "%02d" $potential_month)
             else
                 potential_month="${BASH_REMATCH[2]}"
-                if [ "$potential_month" -le 12 ]; then
+                potential_month=$((10#$potential_month))
+                if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
                     year="$potential_year"
                     month=$(printf "%02d" $potential_month)
                 fi
@@ -236,14 +247,19 @@ if [ "$DRY_RUN" = false ] && [ "$recognized_files" -gt 0 ]; then
         elif [[ $filename =~ ([^0-9]*)([0-9]{4})[^0-9]*([0-9]{2})[^0-9]*(.*) ]]; then
             potential_year="${BASH_REMATCH[2]}"
             potential_month="${BASH_REMATCH[3]}"
+            potential_month=$((10#$potential_month))
             if [ "$potential_month" -ge 1 ] && [ "$potential_month" -le 12 ]; then
                 year="$potential_year"
                 month=$(printf "%02d" $potential_month)
             fi
         fi
         
-        if [ -n "$year" ] && [ -n "$month" ] && [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ] && [ "$month" -ge 1 ] && [ "$month" -le 12 ]; then
-            echo "$year/$(printf "%02d" $month)" >> "$temp_dirs"
+        if [ -n "$year" ] && [ -n "$month" ] && [ "$year" -ge 1990 ] && [ "$year" -le $(date +%Y) ]; then
+            month_num=$((10#$month))
+            if [ "$month_num" -ge 1 ] && [ "$month_num" -le 12 ]; then
+                month_formatted=$(printf "%02d" $month_num)
+                echo "$year/$month_formatted" >> "$temp_dirs"
+            fi
         fi
     done < <(find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) -print0)
     
