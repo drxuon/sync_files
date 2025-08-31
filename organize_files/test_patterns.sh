@@ -40,6 +40,8 @@ if [ ! -d "$SOURCE_DIR" ]; then
 fi
 
 echo "Test riconoscimento date per i file in: $SOURCE_DIR"
+echo "Scansione ricorsiva di tutte le sottodirectory..."
+echo "Esclusione file con pattern *_DUP.*"
 echo "========================================================"
 
 # Funzione per estrarre data dal nome file (identica a organize_files.sh)
@@ -177,7 +179,7 @@ while IFS= read -r -d '' file; do
             unrecognized_list+=("$filename")
         fi
     fi
-done < <(find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) -print0)
+        done < <(find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) ! -name "*_DUP.*" -print0)
 
 echo "========================================================"
 echo "RIEPILOGO:"
@@ -206,6 +208,7 @@ if [ "$unrecognized_files" -gt 0 ]; then
     echo "• Verifica che le date siano in formato YYYY-MM-DD, DD-MM-YYYY, o YYYYMMDD"
     echo "• I file senza date nel nome useranno i metadati EXIF o la data di modifica"
     echo "• Considera di rinominare file con pattern irregolari"
+    echo "• I file *_DUP.* vengono automaticamente esclusi dall'elaborazione"
 fi
 
 # Mostra preview struttura directory (solo in modalità normale)

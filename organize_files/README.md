@@ -301,3 +301,80 @@ chmod +x organize_files.sh
 Visualizzare checkpoint attivi
 Pulire checkpoint per ricominciare
 Ispezionare dettagli specifici
+
+# Versione 11
+🔍 Nuove Funzionalità Ricorsive:
+1. Scansione ricorsiva completa:
+bash# PRIMA - solo directory principale:
+/source/photo1.jpg  ✅
+/source/subdir/photo2.jpg  ❌ (ignorato)
+
+# DOPO - tutte le sottodirectory:
+/source/photo1.jpg  ✅
+/source/subdir/photo2.jpg  ✅
+/source/vacation/2024/img.jpg  ✅
+/source/backup/old/video.mp4  ✅
+2. Esclusione automatica _DUP:
+bash# File ignorati automaticamente:
+/source/photo_DUP.jpg  ❌
+/source/vacation/video_DUP.mp4  ❌
+/source/backup/IMG_20240315_DUP1.jpg  ❌
+
+# File processati normalmente:
+/source/photo.jpg  ✅
+/source/vacation/video.mp4  ✅
+3. Output migliorato con percorsi relativi:
+Processando: vacation/2024/IMG_20240315.jpg
+  Data trovata (YYYYMMDD): 2024-03
+  Spostato in: /dest/2024/03/
+
+Processando: backup/old_photos/sunset.jpg
+  Usando data di modifica: 2023-08
+  Spostato in: /dest/2023/08/
+4. Statistiche avanzate:
+File multimediali trovati: 1,847
+File _DUP.* esclusi: 23
+----------------------------------------
+
+📁 RIEPILOGO DIRECTORY PROCESSATE:
+  456 file da: /vacation_photos
+  234 file da: /backup/2024
+  158 file da: /screenshots
+  89 file da: /downloads
+🎯 Vantaggi della Ricorsività:
+Strutture directory complesse:
+/source/
+├── photos/
+│   ├── 2024/
+│   │   ├── gennaio/
+│   │   └── febbraio/
+│   └── 2023/
+├── videos/
+│   └── vacanze/
+└── downloads/
+    └── temp/
+Tutti i file vengono trovati e organizzati!
+Gestione intelligente duplicati:
+
+File *_DUP.* creati in precedenza vengono ignorati
+Nessun loop infinito di riprocessamento
+Prestazioni migliori (meno file da analizzare)
+
+Pattern find ottimizzato:
+bashfind "$SOURCE_DIR" -type f \
+  \( -iname "*.jpg" -o -iname "*.jpeg" -o ... \) \
+  ! -name "*_DUP.*"
+
+Performance: Un solo comando find per tutto
+Sicurezza: Esclusione pattern integrata
+Completezza: Tutti i tipi di file multimediali
+
+🚀 Utilizzo Migliorato:
+bash# Organizza ricorsivamente tutta la struttura
+./organize_files.sh /complex_source_structure /dest --dry-run
+
+# Output esempio:
+# Scansione ricorsiva di tutte le sottodirectory...
+# Esclusione file con pattern *_DUP.*
+# File multimediali trovati: 2,456
+# File _DUP.* esclusi: 18

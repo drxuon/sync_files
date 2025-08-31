@@ -170,13 +170,29 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 echo "Inizio organizzazione file da $SOURCE_DIR a $DEST_DIR"
+echo "Scansione ricorsiva di tutte le sottodirectory..."
+echo "Esclusione file con pattern *_DUP.*"
 echo "----------------------------------------"
 
 # Carica checkpoint se esistente
 load_checkpoint
 
-# Trova tutti i file multimediali
-find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) | while read -r file; do
+# Conta i file da processare (solo se non in dry-run per non rallentare)
+if [ "$DRY_RUN" = false ]; then
+    echo "Conteggio file da processare..."
+    total_files_to_process=$(find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) ! -name "*_DUP.*" | wc -l)
+    
+    excluded_files=$(find "$SOURCE_DIR" -type f -name "*_DUP.*" | wc -l)
+    
+    echo "File multimediali trovati: $total_files_to_process"
+    if [ "$excluded_files" -gt 0 ]; then
+        echo "File _DUP.* esclusi: $excluded_files"
+    fi
+    echo "----------------------------------------"
+fi
+
+# Trova tutti i file multimediali ricorsivamente, escludendo i file _DUP
+find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) ! -name "*_DUP.*" | while read -r file; do
     
     # Controlla se il file è già stato processato
     if is_file_processed "$file"; then
@@ -187,7 +203,8 @@ find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png
     fi
     
     filename=$(basename "$file")
-    echo "Processando: $filename"
+    relative_path="${file#$SOURCE_DIR/}"
+    echo "Processando: $relative_path"
     
     # Estrai data dal nome file - diversi formati possibili con prefissi/suffissi
     year=""
@@ -469,8 +486,8 @@ if [ "$DRY_RUN" = true ]; then
     echo "STRUTTURA DIRECTORY CHE VERREBBE CREATA:"
     
     # Simula la struttura delle directory che verrebbero create
-    temp_structure="/tmp/dry_run_structure_$$"
-    find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) | while read -r file; do
+    temp_structure="/tmp/dry_run_structure_$"
+    find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) ! -name "*_DUP.*" | while read -r file; do
         filename=$(basename "$file")
         
         # Ripeti la logica di estrazione data (versione semplificata)
@@ -576,6 +593,18 @@ else
         echo "   • Tutti i file hanno date non riconoscibili"
         echo "   • Tutti i file sono già nella destinazione corretta"
         echo "   • La directory sorgente non contiene file multimediali"
+        echo "   • Tutti i file multimediali sono già stati rinominati con _DUP"
+    fi
+    
+    # Mostra riepilogo sottodirectory processate
+    if [ "$MOVED" -gt 0 ] || [ "$DUPLICATES_FOUND" -gt 0 ]; then
+        echo ""
+        echo "📁 RIEPILOGO DIRECTORY PROCESSATE:"
+        find "$SOURCE_DIR" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.gif" -o -iname "*.bmp" -o -iname "*.tiff" -o -iname "*.mp4" -o -iname "*.avi" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.wmv" -o -iname "*.mp3" -o -iname "*.wav" -o -iname "*.flac" \) ! -name "*_DUP.*" -printf '%h\n' | sort | uniq -c | sort -nr | head -10 | while read count dir; do
+            relative_dir="${dir#$SOURCE_DIR}"
+            [ -z "$relative_dir" ] && relative_dir="/"
+            echo "  $count file da: $relative_dir"
+        done
     fi
     
     # Pulizia file di checkpoint al completamento
