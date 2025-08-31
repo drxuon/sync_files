@@ -1,3 +1,9 @@
+# ATTENZIONE!!!
+Questo è un progetto personale a scopo di studio, non si garantisce in alcun modo il corretto funzionamento. Chi lo usa lo fa a proprio rischio.
+
+# WARNING!!!
+This is a personal project for study purposes; proper functioning is not guaranteed in any way. Use it at your own risk.
+
 # Nextcloud Media Sync
 
 Script avanzato per la sincronizzazione di file multimediali da Raspberry Pi a server Nextcloud con gestione intelligente dei duplicati, database SQLite locale, ripresa automatica e modalità dry-run.
