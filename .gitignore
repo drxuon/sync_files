@@ -1,1 +1,4 @@
 venv
+*.db
+*.log
+__pycache__

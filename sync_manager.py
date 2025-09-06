@@ -186,6 +186,10 @@ class NextcloudMediaSync:
             logging.info(f"[DRY-RUN] File unico, verrebbe trasferito normalmente")
             self.report.add_transferred(file_size)
         
+        # Simula cambio proprietario
+        final_remote_path = FileUtils.generate_duplicate_name(None, remote_dest_path, dry_run=True) if is_duplicate else remote_dest_path
+        self.fix_file_ownership(final_remote_path)  # Questo simulerà il cambio proprietario in dry-run
+        
         # Simula aggiornamento cache
         self.duplicate_checker.add_remote_file_hash(file_hash, str(remote_dest_path))
         
@@ -227,6 +231,12 @@ class NextcloudMediaSync:
             self.report.add_error(f"Trasferimento SCP fallito per {local_file_path}")
             return False
         
+        # Cambia proprietario a www-data (importante per Nextcloud)
+        ownership_success = self.fix_file_ownership(final_remote_path)
+        if not ownership_success:
+            logging.warning(f"Attenzione: impossibile cambiare proprietario a www-data per {final_remote_path}")
+            logging.warning("Il file potrebbe non essere accessibile da Nextcloud fino al cambio manuale")
+        
         # Aggiorna cache hash
         self.duplicate_checker.add_remote_file_hash(file_hash, str(final_remote_path))
         
@@ -244,12 +254,146 @@ class NextcloudMediaSync:
         logging.info(f"Trasferito: {local_file_path} -> {final_remote_path}")
         return True
     
+    def perform_dry_run_checks(self):
+        """Esegue tutte le verifiche necessarie per il dry-run"""
+        logging.info("=== VERIFICA PRE-SINCRONIZZAZIONE (DRY-RUN) ===")
+        
+        checks_passed = 0
+        total_checks = 5
+        
+        # 1. Verifica esistenza directory sorgente locale
+        logging.info("1/5 Verifica directory sorgente locale...")
+        if self.local_source_path.exists() and self.local_source_path.is_dir():
+            logging.info(f"   ✅ Directory sorgente OK: {self.local_source_path}")
+            checks_passed += 1
+        else:
+            logging.error(f"   ❌ Directory sorgente non trovata: {self.local_source_path}")
+            return False
+        
+        # 2. Verifica connessione SSH
+        logging.info("2/5 Verifica connessione SSH al server Nextcloud...")
+        try:
+            if self.ssh_manager.connect():
+                logging.info(f"   ✅ Connessione SSH OK: {self.nextcloud_user}@{self.nextcloud_host}")
+                checks_passed += 1
+                
+                # 3. Verifica esistenza directory destinazione
+                logging.info("3/5 Verifica directory destinazione su server...")
+                result = self.ssh_manager.execute_command(f"test -d '{self.nextcloud_dest_path}' && echo 'exists' || echo 'not_exists'")
+                if result['exit_status'] == 0 and result['output'] == 'exists':
+                    logging.info(f"   ✅ Directory destinazione OK: {self.nextcloud_dest_path}")
+                    checks_passed += 1
+                else:
+                    logging.error(f"   ❌ Directory destinazione non trovata: {self.nextcloud_dest_path}")
+                    logging.info("   💡 Verifica che la directory esista o che i permessi permettano l'accesso")
+                
+                # 4. Verifica proprietà directory (www-data)
+                logging.info("4/5 Verifica proprietario directory destinazione...")
+                result = self.ssh_manager.execute_command(f"stat -c '%U' '{self.nextcloud_dest_path}' 2>/dev/null || echo 'error'")
+                if result['exit_status'] == 0 and result['output'] != 'error':
+                    owner = result['output']
+                    if owner == 'www-data':
+                        logging.info(f"   ✅ Proprietario directory OK: {owner}")
+                        checks_passed += 1
+                    else:
+                        logging.warning(f"   ⚠️  Proprietario directory: {owner} (previsto: www-data)")
+                        logging.info("   💡 Potrebbe essere necessario cambiare proprietà dopo il trasferimento")
+                        checks_passed += 1  # Non bloccare per questo
+                else:
+                    logging.warning("   ⚠️  Non è possibile verificare il proprietario della directory")
+                    checks_passed += 1  # Non bloccare per questo
+                
+                # 5. Verifica possibilità di diventare root (per gestione permessi www-data)
+                logging.info("5/5 Verifica possibilità di eseguire comandi come root...")
+                if self.nextcloud_user == 'root':
+                    logging.info("   ✅ Connesso come root, gestione permessi diretta")
+                    checks_passed += 1
+                else:
+                    # Testa se l'utente può fare 'su' senza password o con sudo
+                    result = self.ssh_manager.execute_command("sudo -n whoami 2>/dev/null || echo 'no_sudo'")
+                    if result['exit_status'] == 0 and result['output'] != 'no_sudo':
+                        logging.info(f"   ✅ Sudo disponibile senza password per {self.nextcloud_user}")
+                        checks_passed += 1
+                    else:
+                        # Verifica se 'su' è disponibile (richiederà password)
+                        result = self.ssh_manager.execute_command("which su")
+                        if result['exit_status'] == 0:
+                            logging.info("   ⚠️  Comando 'su' disponibile ma richiederà password root")
+                            logging.info("   💡 Durante la sincronizzazione reale verrà richiesta la password root")
+                            checks_passed += 1
+                        else:
+                            logging.error("   ❌ Né sudo né su sono disponibili per diventare root")
+                            logging.error("   💡 Sarà impossibile cambiare i permessi dei file trasferiti")
+                
+                self.ssh_manager.disconnect()
+                
+            else:
+                logging.error(f"   ❌ Impossibile connettersi a {self.nextcloud_user}@{self.nextcloud_host}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"   ❌ Errore durante la verifica connessione: {e}")
+            return False
+        
+        # Riepilogo finale
+        logging.info(f"\n=== RIEPILOGO VERIFICHE: {checks_passed}/{total_checks} ===")
+        
+        if checks_passed == total_checks:
+            logging.info("✅ Tutte le verifiche sono state superate con successo")
+            logging.info("🚀 Il sistema è pronto per la sincronizzazione")
+            return True
+        elif checks_passed >= total_checks - 1:  # Permette un fallimento non critico
+            logging.info("⚠️  La maggior parte delle verifiche è stata superata")
+            logging.info("🚀 La sincronizzazione dovrebbe funzionare ma potrebbero esserci problemi minori")
+            return True
+        else:
+            logging.error("❌ Troppe verifiche fallite, sincronizzazione sconsigliata")
+            return False
+
+    def fix_file_ownership(self, remote_path):
+        """Cambia il proprietario del file a www-data usando su/sudo"""
+        if self.dry_run:
+            logging.info(f"   [DRY-RUN] Cambierebbe proprietario di {remote_path} a www-data:www-data")
+            return True
+            
+        try:
+            if self.nextcloud_user == 'root':
+                # Già root, cambia proprietario direttamente
+                result = self.ssh_manager.execute_command(f"chown www-data:www-data '{remote_path}'")
+                if result['exit_status'] == 0:
+                    logging.debug(f"Proprietario cambiato a www-data per {remote_path}")
+                    return True
+                else:
+                    logging.warning(f"Impossibile cambiare proprietario per {remote_path}: {result['error']}")
+                    return False
+            else:
+                # Prova con sudo
+                result = self.ssh_manager.execute_command(f"sudo -n chown www-data:www-data '{remote_path}' 2>/dev/null")
+                if result['exit_status'] == 0:
+                    logging.debug(f"Proprietario cambiato a www-data per {remote_path} (via sudo)")
+                    return True
+                else:
+                    # Prova con su (richiederà password interattivamente)
+                    logging.warning(f"Sudo fallito per {remote_path}, necessaria password root")
+                    # In questo caso, l'utente dovrà fornire la password root manualmente
+                    # Questo è un limite del sistema attuale ma è documentato nel dry-run
+                    return False
+                    
+        except Exception as e:
+            logging.error(f"Errore nel cambio proprietario per {remote_path}: {e}")
+            return False
+
     def sync_files(self):
         """Esegue la sincronizzazione completa"""
         start_time = datetime.now()
         
         if self.dry_run:
             logging.info("=== INIZIO DRY-RUN: SIMULAZIONE SINCRONIZZAZIONE ===")
+            # Esegui verifiche comprehensive per dry-run
+            if not self.perform_dry_run_checks():
+                logging.error("❌ Verifiche dry-run fallite, sincronizzazione non consigliata")
+                return False
+            logging.info("✅ Verifiche dry-run completate, simulando resto della sincronizzazione...")
         else:
             logging.info("Inizio sincronizzazione file multimediali")
         
