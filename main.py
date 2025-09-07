@@ -150,8 +150,8 @@ ESEMPI DI UTILIZZO:
     connection_group = parser.add_argument_group('🔗 CONNESSIONE NEXTCLOUD')
     connection_group.add_argument('--nextcloud-host', required=False, 
                                 help='IP/hostname del server Nextcloud')
-    connection_group.add_argument('--nextcloud-user', default='root',
-                                help='Username SSH per Nextcloud (default: root)')
+    connection_group.add_argument('--nextcloud-user', required=False,
+                                help='Username SSH per Nextcloud (es: davide)')
     connection_group.add_argument('--ssh-key', 
                                 help='Percorso chiave SSH privata')
     
@@ -213,6 +213,8 @@ ESEMPI DI UTILIZZO:
         missing_args = []
         if not args.nextcloud_host:
             missing_args.append('--nextcloud-host')
+        if not args.nextcloud_user:
+            missing_args.append('--nextcloud-user')
         if not args.nextcloud_dest:
             missing_args.append('--nextcloud-dest')
         if not args.local_source:

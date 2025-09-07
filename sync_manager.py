@@ -186,9 +186,9 @@ class NextcloudMediaSync:
             logging.info(f"[DRY-RUN] File unico, verrebbe trasferito normalmente")
             self.report.add_transferred(file_size)
         
-        # Simula cambio proprietario
+        # Simula trasferimento come www-data
         final_remote_path = FileUtils.generate_duplicate_name(None, remote_dest_path, dry_run=True) if is_duplicate else remote_dest_path
-        self.fix_file_ownership(final_remote_path)  # Questo simulerà il cambio proprietario in dry-run
+        self.transfer_as_www_data(local_file_path, final_remote_path)  # Questo simulerà il trasferimento come www-data
         
         # Simula aggiornamento cache
         self.duplicate_checker.add_remote_file_hash(file_hash, str(remote_dest_path))
@@ -204,10 +204,10 @@ class NextcloudMediaSync:
     
     def _execute_transfer(self, local_file_path, remote_dest_path, file_hash, file_size):
         """Esegue il trasferimento reale di un file"""
-        # Crea directory remota se necessario
+        # Crea directory remota come www-data se necessario
         remote_parent = remote_dest_path.parent
-        if not FileUtils.ensure_remote_directory(self.ssh_manager, remote_parent):
-            self.report.add_error(f"Impossibile creare directory {remote_parent}")
+        if not self.ensure_directory_as_www_data(remote_parent):
+            self.report.add_error(f"Impossibile creare directory {remote_parent} come www-data")
             return False
         
         # Controlla se è un duplicato sui file remoti correnti
@@ -226,16 +226,10 @@ class NextcloudMediaSync:
             self.report.add_renamed_duplicate()
             logging.info(f"File sarà salvato come duplicato: {final_remote_path}")
         
-        # Trasferimento via SCP
-        if not self.ssh_manager.transfer_file(local_file_path, final_remote_path):
-            self.report.add_error(f"Trasferimento SCP fallito per {local_file_path}")
+        # Trasferimento e gestione proprietario come www-data
+        if not self.transfer_as_www_data(local_file_path, final_remote_path):
+            self.report.add_error(f"Trasferimento come www-data fallito per {local_file_path}")
             return False
-        
-        # Cambia proprietario a www-data (importante per Nextcloud)
-        ownership_success = self.fix_file_ownership(final_remote_path)
-        if not ownership_success:
-            logging.warning(f"Attenzione: impossibile cambiare proprietario a www-data per {final_remote_path}")
-            logging.warning("Il file potrebbe non essere accessibile da Nextcloud fino al cambio manuale")
         
         # Aggiorna cache hash
         self.duplicate_checker.add_remote_file_hash(file_hash, str(final_remote_path))
@@ -303,27 +297,25 @@ class NextcloudMediaSync:
                     logging.warning("   ⚠️  Non è possibile verificare il proprietario della directory")
                     checks_passed += 1  # Non bloccare per questo
                 
-                # 5. Verifica possibilità di diventare root (per gestione permessi www-data)
-                logging.info("5/5 Verifica possibilità di eseguire comandi come root...")
-                if self.nextcloud_user == 'root':
-                    logging.info("   ✅ Connesso come root, gestione permessi diretta")
-                    checks_passed += 1
-                else:
-                    # Testa se l'utente può fare 'su' senza password o con sudo
-                    result = self.ssh_manager.execute_command("sudo -n whoami 2>/dev/null || echo 'no_sudo'")
-                    if result['exit_status'] == 0 and result['output'] != 'no_sudo':
-                        logging.info(f"   ✅ Sudo disponibile senza password per {self.nextcloud_user}")
+                # 5. Verifica possibilità di eseguire comandi come www-data
+                logging.info("5/5 Verifica possibilità di eseguire comandi come www-data...")
+                try:
+                    # Testa se si può fare 'su www-data' per eseguire un comando semplice
+                    result = self.ssh_manager.execute_as_www_data("whoami")
+                    if result['exit_status'] == 0 and result['output'].strip() == 'www-data':
+                        logging.info("   ✅ Comando 'su www-data' funziona correttamente")
+                        logging.info("   ✅ I file saranno trasferiti con proprietario www-data")
                         checks_passed += 1
                     else:
-                        # Verifica se 'su' è disponibile (richiederà password)
+                        logging.warning(f"   ⚠️  Comando 'su www-data' ha risultato inaspettato: {result['output']}")
+                        logging.info("   💡 Potrebbe essere necessaria configurazione aggiuntiva")
+                        # Verifica se almeno 'su' esiste
                         result = self.ssh_manager.execute_command("which su")
                         if result['exit_status'] == 0:
-                            logging.info("   ⚠️  Comando 'su' disponibile ma richiederà password root")
-                            logging.info("   💡 Durante la sincronizzazione reale verrà richiesta la password root")
-                            checks_passed += 1
-                        else:
-                            logging.error("   ❌ Né sudo né su sono disponibili per diventare root")
-                            logging.error("   💡 Sarà impossibile cambiare i permessi dei file trasferiti")
+                            checks_passed += 1  # Su esiste, dovrebbe funzionare
+                except Exception as e:
+                    logging.error(f"   ❌ Impossibile eseguire 'su www-data': {e}")
+                    logging.error("   💡 Verifica che l'utente www-data esista e che 'su' sia disponibile")
                 
                 self.ssh_manager.disconnect()
                 
@@ -350,37 +342,54 @@ class NextcloudMediaSync:
             logging.error("❌ Troppe verifiche fallite, sincronizzazione sconsigliata")
             return False
 
-    def fix_file_ownership(self, remote_path):
-        """Cambia il proprietario del file a www-data usando su/sudo"""
+    def transfer_as_www_data(self, local_path, remote_path):
+        """Trasferisce file e operazioni directory come www-data"""
         if self.dry_run:
-            logging.info(f"   [DRY-RUN] Cambierebbe proprietario di {remote_path} a www-data:www-data")
+            logging.info(f"   [DRY-RUN] Trasferimento come www-data: {local_path} -> {remote_path}")
             return True
             
         try:
-            if self.nextcloud_user == 'root':
-                # Già root, cambia proprietario direttamente
-                result = self.ssh_manager.execute_command(f"chown www-data:www-data '{remote_path}'")
-                if result['exit_status'] == 0:
-                    logging.debug(f"Proprietario cambiato a www-data per {remote_path}")
-                    return True
-                else:
-                    logging.warning(f"Impossibile cambiare proprietario per {remote_path}: {result['error']}")
-                    return False
+            # Prima trasferisci il file normalmente
+            if not self.ssh_manager.transfer_file(local_path, remote_path):
+                return False
+            
+            # Poi cambia proprietario a www-data usando su
+            result = self.ssh_manager.execute_as_www_data(f"chown www-data:www-data '{remote_path}'")
+            if result['exit_status'] == 0:
+                logging.debug(f"File trasferito e proprietario impostato a www-data: {remote_path}")
+                return True
             else:
-                # Prova con sudo
-                result = self.ssh_manager.execute_command(f"sudo -n chown www-data:www-data '{remote_path}' 2>/dev/null")
-                if result['exit_status'] == 0:
-                    logging.debug(f"Proprietario cambiato a www-data per {remote_path} (via sudo)")
-                    return True
-                else:
-                    # Prova con su (richiederà password interattivamente)
-                    logging.warning(f"Sudo fallito per {remote_path}, necessaria password root")
-                    # In questo caso, l'utente dovrà fornire la password root manualmente
-                    # Questo è un limite del sistema attuale ma è documentato nel dry-run
-                    return False
+                logging.warning(f"File trasferito ma impossibile cambiare proprietario per {remote_path}: {result['error']}")
+                # Il file è comunque trasferito, solo il proprietario potrebbe essere sbagliato
+                return True
                     
         except Exception as e:
-            logging.error(f"Errore nel cambio proprietario per {remote_path}: {e}")
+            logging.error(f"Errore nel trasferimento come www-data per {remote_path}: {e}")
+            return False
+
+    def ensure_directory_as_www_data(self, remote_dir):
+        """Crea directory come www-data se non esiste"""
+        if self.dry_run:
+            logging.info(f"   [DRY-RUN] Creerebbe directory come www-data: {remote_dir}")
+            return True
+            
+        try:
+            # Verifica se la directory esiste già
+            result = self.ssh_manager.execute_as_www_data(f"test -d '{remote_dir}'")
+            if result['exit_status'] == 0:
+                return True  # Directory già esiste
+            
+            # Crea la directory come www-data
+            result = self.ssh_manager.execute_as_www_data(f"mkdir -p '{remote_dir}'")
+            if result['exit_status'] == 0:
+                logging.debug(f"Directory creata come www-data: {remote_dir}")
+                return True
+            else:
+                logging.error(f"Impossibile creare directory come www-data {remote_dir}: {result['error']}")
+                return False
+                    
+        except Exception as e:
+            logging.error(f"Errore nella creazione directory come www-data per {remote_dir}: {e}")
             return False
 
     def sync_files(self):

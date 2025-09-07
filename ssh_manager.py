@@ -92,6 +92,30 @@ class SSHManager:
         except Exception:
             return False
     
+    def execute_as_www_data(self, command, timeout=300):
+        """Esegue un comando come utente www-data usando su"""
+        if not self.ssh_client:
+            raise Exception("Connessione SSH non attiva")
+        
+        # Costruisce il comando con su per diventare www-data
+        su_command = f"su -c '{command}' www-data"
+        
+        try:
+            _, stdout, stderr = self.ssh_client.exec_command(su_command, timeout=timeout)
+            exit_status = stdout.channel.recv_exit_status()
+            output = stdout.read().decode()
+            error = stderr.read().decode()
+            
+            return {
+                'exit_status': exit_status,
+                'output': output.strip(),
+                'error': error.strip()
+            }
+            
+        except Exception as e:
+            logging.error(f"Errore esecuzione comando come www-data '{command}': {e}")
+            raise
+
     def get_client(self):
         """Ritorna il client SSH per operazioni avanzate"""
         return self.ssh_client
