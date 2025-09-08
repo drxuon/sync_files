@@ -117,6 +117,43 @@ class SSHManager:
             logging.error(f"Errore esecuzione comando come www-data '{command}': {e}")
             raise
 
+    def transfer_file_as_www_data(self, local_path, remote_path):
+        """Trasferisce un file direttamente come www-data"""
+        if not self.ssh_client:
+            raise Exception("Connessione SSH non attiva")
+        
+        try:
+            # Prima crea la directory di destinazione come www-data se necessaria
+            remote_dir = str(remote_path).rsplit('/', 1)[0]
+            mkdir_result = self.execute_as_www_data(f"mkdir -p '{remote_dir}'")
+            if mkdir_result['exit_status'] != 0:
+                logging.warning(f"Impossibile creare directory {remote_dir}: {mkdir_result['error']}")
+            
+            # Trasferisce il file normalmente
+            with SCPClient(self.ssh_client.get_transport()) as scp:
+                scp.put(str(local_path), str(remote_path))
+            
+            # Cambia immediatamente proprietario a www-data
+            chown_result = self.execute_as_www_data(f"chown www-data:www-data '{remote_path}'")
+            if chown_result['exit_status'] != 0:
+                logging.warning(f"Impossibile cambiare proprietario per {remote_path}: {chown_result['error']}")
+                # Non fallire per questo, il file è comunque trasferito
+            
+            logging.debug(f"File trasferito e impostato come www-data: {remote_path}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Errore trasferimento file come www-data {local_path} -> {remote_path}: {e}")
+            return False
+
+    def check_www_data_access(self, remote_path):
+        """Verifica se www-data può accedere al percorso remoto"""
+        try:
+            result = self.execute_as_www_data(f"test -w '{remote_path}' && echo 'writable' || echo 'not_writable'")
+            return result['exit_status'] == 0 and result['output'] == 'writable'
+        except Exception:
+            return False
+
     def get_client(self):
         """Ritorna il client SSH per operazioni avanzate"""
         return self.ssh_client

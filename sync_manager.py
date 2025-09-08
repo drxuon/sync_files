@@ -186,9 +186,9 @@ class NextcloudMediaSync:
             logging.info(f"[DRY-RUN] File unico, verrebbe trasferito normalmente")
             self.report.add_transferred(file_size)
         
-        # Simula trasferimento come www-data
+        # Simula trasferimento ottimizzato come www-data
         final_remote_path = FileUtils.generate_duplicate_name(None, remote_dest_path, dry_run=True) if is_duplicate else remote_dest_path
-        self.transfer_as_www_data(local_file_path, final_remote_path)  # Questo simulerà il trasferimento come www-data
+        self.transfer_file_optimized(local_file_path, final_remote_path)  # Simula trasferimento ottimizzato
         
         # Simula aggiornamento cache
         self.duplicate_checker.add_remote_file_hash(file_hash, str(remote_dest_path))
@@ -204,11 +204,7 @@ class NextcloudMediaSync:
     
     def _execute_transfer(self, local_file_path, remote_dest_path, file_hash, file_size):
         """Esegue il trasferimento reale di un file"""
-        # Crea directory remota come www-data se necessario
-        remote_parent = remote_dest_path.parent
-        if not self.ensure_directory_as_www_data(remote_parent):
-            self.report.add_error(f"Impossibile creare directory {remote_parent} come www-data")
-            return False
+        # Le directory saranno create automaticamente dal transfer_file_as_www_data
         
         # Controlla se è un duplicato sui file remoti correnti
         is_duplicate = self.duplicate_checker.is_duplicate_in_remote(file_hash)
@@ -226,9 +222,9 @@ class NextcloudMediaSync:
             self.report.add_renamed_duplicate()
             logging.info(f"File sarà salvato come duplicato: {final_remote_path}")
         
-        # Trasferimento e gestione proprietario come www-data
-        if not self.transfer_as_www_data(local_file_path, final_remote_path):
-            self.report.add_error(f"Trasferimento come www-data fallito per {local_file_path}")
+        # Trasferimento ottimizzato direttamente come www-data
+        if not self.transfer_file_optimized(local_file_path, final_remote_path):
+            self.report.add_error(f"Trasferimento ottimizzato fallito per {local_file_path}")
             return False
         
         # Aggiorna cache hash
@@ -271,12 +267,21 @@ class NextcloudMediaSync:
                 logging.info(f"   ✅ Connessione SSH OK: {self.nextcloud_user}@{self.nextcloud_host}")
                 checks_passed += 1
                 
-                # 3. Verifica esistenza directory destinazione
-                logging.info("3/5 Verifica directory destinazione su server...")
+                # 3. Verifica esistenza e accesso directory destinazione con www-data
+                logging.info("3/5 Verifica directory destinazione e accesso www-data...")
+                # Prima verifica l'esistenza della directory
                 result = self.ssh_manager.execute_command(f"test -d '{self.nextcloud_dest_path}' && echo 'exists' || echo 'not_exists'")
                 if result['exit_status'] == 0 and result['output'] == 'exists':
-                    logging.info(f"   ✅ Directory destinazione OK: {self.nextcloud_dest_path}")
-                    checks_passed += 1
+                    logging.info(f"   ✅ Directory destinazione esiste: {self.nextcloud_dest_path}")
+                    
+                    # Poi verifica l'accesso in scrittura con www-data
+                    if self.ssh_manager.check_www_data_access(self.nextcloud_dest_path):
+                        logging.info("   ✅ Directory accessibile in scrittura da www-data")
+                        checks_passed += 1
+                    else:
+                        logging.warning("   ⚠️  Directory non accessibile in scrittura da www-data")
+                        logging.info("   💡 Potrebbe essere necessario modificare i permessi della directory")
+                        checks_passed += 1  # Non bloccare, ma avvertire
                 else:
                     logging.error(f"   ❌ Directory destinazione non trovata: {self.nextcloud_dest_path}")
                     logging.info("   💡 Verifica che la directory esista o che i permessi permettano l'accesso")
@@ -342,55 +347,14 @@ class NextcloudMediaSync:
             logging.error("❌ Troppe verifiche fallite, sincronizzazione sconsigliata")
             return False
 
-    def transfer_as_www_data(self, local_path, remote_path):
-        """Trasferisce file e operazioni directory come www-data"""
+    def transfer_file_optimized(self, local_path, remote_path):
+        """Trasferisce file direttamente con proprietario www-data ottimizzato"""
         if self.dry_run:
-            logging.info(f"   [DRY-RUN] Trasferimento come www-data: {local_path} -> {remote_path}")
+            logging.info(f"   [DRY-RUN] Trasferimento ottimizzato come www-data: {local_path} -> {remote_path}")
             return True
             
-        try:
-            # Prima trasferisci il file normalmente
-            if not self.ssh_manager.transfer_file(local_path, remote_path):
-                return False
-            
-            # Poi cambia proprietario a www-data usando su
-            result = self.ssh_manager.execute_as_www_data(f"chown www-data:www-data '{remote_path}'")
-            if result['exit_status'] == 0:
-                logging.debug(f"File trasferito e proprietario impostato a www-data: {remote_path}")
-                return True
-            else:
-                logging.warning(f"File trasferito ma impossibile cambiare proprietario per {remote_path}: {result['error']}")
-                # Il file è comunque trasferito, solo il proprietario potrebbe essere sbagliato
-                return True
-                    
-        except Exception as e:
-            logging.error(f"Errore nel trasferimento come www-data per {remote_path}: {e}")
-            return False
-
-    def ensure_directory_as_www_data(self, remote_dir):
-        """Crea directory come www-data se non esiste"""
-        if self.dry_run:
-            logging.info(f"   [DRY-RUN] Creerebbe directory come www-data: {remote_dir}")
-            return True
-            
-        try:
-            # Verifica se la directory esiste già
-            result = self.ssh_manager.execute_as_www_data(f"test -d '{remote_dir}'")
-            if result['exit_status'] == 0:
-                return True  # Directory già esiste
-            
-            # Crea la directory come www-data
-            result = self.ssh_manager.execute_as_www_data(f"mkdir -p '{remote_dir}'")
-            if result['exit_status'] == 0:
-                logging.debug(f"Directory creata come www-data: {remote_dir}")
-                return True
-            else:
-                logging.error(f"Impossibile creare directory come www-data {remote_dir}: {result['error']}")
-                return False
-                    
-        except Exception as e:
-            logging.error(f"Errore nella creazione directory come www-data per {remote_dir}: {e}")
-            return False
+        # Usa il metodo ottimizzato del SSH manager
+        return self.ssh_manager.transfer_file_as_www_data(local_path, remote_path)
 
     def sync_files(self):
         """Esegue la sincronizzazione completa"""
