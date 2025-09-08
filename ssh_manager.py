@@ -5,6 +5,7 @@ Gestisce le connessioni SSH e i comandi remoti
 """
 
 import logging
+import getpass
 import paramiko
 from scp import SCPClient
 
@@ -28,7 +29,7 @@ class SSHManager:
                     key_filename=self.ssh_key_path
                 )
             else:
-                password = input(f"Password per {self.user}@{self.host}: ")
+                password = getpass.getpass(f"Password per {self.user}@{self.host}: ")
                 self.ssh_client.connect(
                     self.host, 
                     username=self.user, 
