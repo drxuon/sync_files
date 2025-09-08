@@ -94,18 +94,33 @@ class SSHManager:
             return False
     
     def execute_as_www_data(self, command, timeout=300):
-        """Esegue un comando come utente www-data usando su"""
+        """Esegue un comando come utente www-data usando su via root"""
         if not self.ssh_client:
             raise Exception("Connessione SSH non attiva")
         
-        # Costruisce il comando con su per diventare www-data
-        su_command = f"su -c '{command}' www-data"
+        # Se siamo già root, usiamo direttamente su
+        if self.user == 'root':
+            su_command = f"su -c '{command}' www-data"
+        else:
+            # Se non siamo root, dobbiamo prima diventare root, poi www-data
+            # Prova prima con sudo
+            su_command = f"sudo su -c '{command}' www-data"
         
         try:
             _, stdout, stderr = self.ssh_client.exec_command(su_command, timeout=timeout)
             exit_status = stdout.channel.recv_exit_status()
             output = stdout.read().decode()
             error = stderr.read().decode()
+            
+            # Se sudo fallisce e non siamo root, proviamo con su root
+            if exit_status != 0 and self.user != 'root' and 'sudo' in error:
+                logging.debug("Sudo fallito, tentativo con su root...")
+                # Questo richiederà la password root interattivamente
+                su_command = f"su -c 'su -c \"{command}\" www-data' root"
+                _, stdout, stderr = self.ssh_client.exec_command(su_command, timeout=timeout)
+                exit_status = stdout.channel.recv_exit_status()
+                output = stdout.read().decode()
+                error = stderr.read().decode()
             
             return {
                 'exit_status': exit_status,
@@ -118,32 +133,35 @@ class SSHManager:
             raise
 
     def transfer_file_as_www_data(self, local_path, remote_path):
-        """Trasferisce un file direttamente come www-data"""
+        """Trasferisce un file e gestisce proprietario www-data"""
         if not self.ssh_client:
             raise Exception("Connessione SSH non attiva")
         
         try:
-            # Prima crea la directory di destinazione come www-data se necessaria
+            # Prima crea la directory di destinazione normalmente
             remote_dir = str(remote_path).rsplit('/', 1)[0]
-            mkdir_result = self.execute_as_www_data(f"mkdir -p '{remote_dir}'")
+            mkdir_result = self.execute_command(f"mkdir -p '{remote_dir}'")
             if mkdir_result['exit_status'] != 0:
                 logging.warning(f"Impossibile creare directory {remote_dir}: {mkdir_result['error']}")
             
-            # Trasferisce il file normalmente
+            # Trasferisce il file normalmente con l'utente connesso
             with SCPClient(self.ssh_client.get_transport()) as scp:
                 scp.put(str(local_path), str(remote_path))
             
-            # Cambia immediatamente proprietario a www-data
+            # Cambia proprietario a www-data usando sudo/su root
             chown_result = self.execute_as_www_data(f"chown www-data:www-data '{remote_path}'")
             if chown_result['exit_status'] != 0:
-                logging.warning(f"Impossibile cambiare proprietario per {remote_path}: {chown_result['error']}")
+                logging.warning(f"Attenzione: impossibile cambiare proprietario per {remote_path}")
+                logging.warning(f"Errore: {chown_result['error']}")
+                logging.info("Il file è stato trasferito ma potrebbe avere proprietario sbagliato")
                 # Non fallire per questo, il file è comunque trasferito
+            else:
+                logging.debug(f"File trasferito e proprietario impostato a www-data: {remote_path}")
             
-            logging.debug(f"File trasferito e impostato come www-data: {remote_path}")
             return True
             
         except Exception as e:
-            logging.error(f"Errore trasferimento file come www-data {local_path} -> {remote_path}: {e}")
+            logging.error(f"Errore trasferimento file {local_path} -> {remote_path}: {e}")
             return False
 
     def check_www_data_access(self, remote_path):

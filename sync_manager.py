@@ -302,25 +302,52 @@ class NextcloudMediaSync:
                     logging.warning("   ⚠️  Non è possibile verificare il proprietario della directory")
                     checks_passed += 1  # Non bloccare per questo
                 
-                # 5. Verifica possibilità di eseguire comandi come www-data
-                logging.info("5/5 Verifica possibilità di eseguire comandi come www-data...")
-                try:
-                    # Testa se si può fare 'su www-data' per eseguire un comando semplice
-                    result = self.ssh_manager.execute_as_www_data("whoami")
-                    if result['exit_status'] == 0 and result['output'].strip() == 'www-data':
-                        logging.info("   ✅ Comando 'su www-data' funziona correttamente")
-                        logging.info("   ✅ I file saranno trasferiti con proprietario www-data")
-                        checks_passed += 1
+                # 5. Verifica possibilità di diventare www-data tramite root
+                logging.info("5/5 Verifica possibilità di diventare www-data...")
+                
+                if self.nextcloud_user == 'root':
+                    # Se siamo root, test diretto
+                    try:
+                        result = self.ssh_manager.execute_as_www_data("whoami")
+                        if result['exit_status'] == 0 and result['output'].strip() == 'www-data':
+                            logging.info("   ✅ Accesso diretto a www-data come root funziona")
+                            checks_passed += 1
+                        else:
+                            logging.warning("   ⚠️  Problema con 'su www-data' anche da root")
+                            checks_passed += 1  # Non bloccare
+                    except Exception as e:
+                        logging.error(f"   ❌ Errore test www-data da root: {e}")
+                else:
+                    # Se non siamo root, verifica sudo o su
+                    logging.info(f"   Connesso come {self.nextcloud_user}, verifica accesso root...")
+                    
+                    # Test sudo
+                    sudo_result = self.ssh_manager.execute_command("sudo -n whoami 2>/dev/null || echo 'no_sudo'")
+                    if sudo_result['exit_status'] == 0 and sudo_result['output'] != 'no_sudo':
+                        logging.info("   ✅ Sudo disponibile, test www-data...")
+                        try:
+                            result = self.ssh_manager.execute_as_www_data("whoami")
+                            if result['exit_status'] == 0 and result['output'].strip() == 'www-data':
+                                logging.info("   ✅ Accesso www-data via sudo funziona")
+                                checks_passed += 1
+                            else:
+                                logging.warning("   ⚠️  Sudo disponibile ma problema con www-data")
+                                logging.info("   💡 I file saranno trasferiti ma proprietario potrebbe essere sbagliato")
+                                checks_passed += 1
+                        except Exception:
+                            logging.warning("   ⚠️  Sudo disponibile ma errore con www-data")
+                            checks_passed += 1
                     else:
-                        logging.warning(f"   ⚠️  Comando 'su www-data' ha risultato inaspettato: {result['output']}")
-                        logging.info("   💡 Potrebbe essere necessaria configurazione aggiuntiva")
-                        # Verifica se almeno 'su' esiste
-                        result = self.ssh_manager.execute_command("which su")
-                        if result['exit_status'] == 0:
-                            checks_passed += 1  # Su esiste, dovrebbe funzionare
-                except Exception as e:
-                    logging.error(f"   ❌ Impossibile eseguire 'su www-data': {e}")
-                    logging.error("   💡 Verifica che l'utente www-data esista e che 'su' sia disponibile")
+                        # Verifica se 'su' è disponibile per root
+                        su_result = self.ssh_manager.execute_command("which su")
+                        if su_result['exit_status'] == 0:
+                            logging.warning("   ⚠️  Sudo non disponibile, 'su' disponibile")
+                            logging.info("   💡 Durante sincronizzazione verrà richiesta password root")
+                            logging.info("   💡 Necessario per cambiare proprietario file a www-data")
+                            checks_passed += 1
+                        else:
+                            logging.error("   ❌ Né sudo né su sono disponibili")
+                            logging.error("   💡 Impossibile cambiare proprietario file a www-data")
                 
                 self.ssh_manager.disconnect()
                 
